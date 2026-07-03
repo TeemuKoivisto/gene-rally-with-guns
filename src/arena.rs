@@ -128,7 +128,8 @@ fn spawn_props(
                 Transform::from_xyz(2.0 + x as f32 * 1.1, 0.5, 2.0 + z as f32 * 1.1),
                 RigidBody::Dynamic,
                 Collider::cuboid(1.0, 1.0, 1.0),
-                Mass(20.0),
+                // Light: cars plow through crates, not bounce off them.
+                Mass(2.0),
             ));
         }
     }

@@ -259,8 +259,11 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot)
                 RigidBody::Dynamic,
                 Collider::cuboid(1.0, 0.4, 2.0),
                 LockedAxes::new().lock_rotation_x().lock_rotation_z(),
-                Friction::new(0.1),
-                Restitution::new(0.2),
+                // Frictionless contacts: grip lives in the drive model, and
+                // scraping a wall must not glue the car to it.
+                Friction::new(0.0).with_combine_rule(CoefficientCombine::Min),
+                // Springy: wall hits bounce you off instead of pinning you.
+                Restitution::new(0.6).with_combine_rule(CoefficientCombine::Max),
                 Mass(6.0),
             ),
             input::map_for(slot.source),
