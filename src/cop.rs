@@ -30,7 +30,7 @@ const COP_DRIVE: DriveParams = DriveParams {
     min_steer_authority: 0.0,
 };
 
-const COP_HEALTH: f32 = 120.0;
+const COP_HEALTH: f32 = 60.0;
 const COP_MASS: f32 = 14.0;
 /// Wrecking one cop spawns this many replacements.
 const REPLACEMENTS_PER_WRECK: usize = 2;

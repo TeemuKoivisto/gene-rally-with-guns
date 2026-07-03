@@ -52,13 +52,13 @@ pub const PLAYER_DRIVE: DriveParams = DriveParams {
     grip_low_speed: 9.0,
     grip_high_speed: 3.0,
     handbrake_grip: 1.5,
-    max_yaw_rate: 3.4,
+    max_yaw_rate: 4.2,
     full_steer_at: 0.2,
-    yaw_response: 12.0,
-    min_steer_authority: 0.42,
+    yaw_response: 15.0,
+    min_steer_authority: 0.65,
 };
 
-pub const MAX_HEALTH: f32 = 100.0;
+pub const MAX_HEALTH: f32 = 33.0;
 const HEALTH_BAR_WIDTH: f32 = 1.4;
 
 /// Candy-bright, high-contrast player colors (design §10; 8 local players).
