@@ -97,14 +97,12 @@ _Recommendation:_ build **Last Car Running** end-to-end for the vertical slice; 
 Target: **up to 8 local players**, gamepad-first. Biggest UX constraint; shapes camera, art, HUD.
 
 - **Input:** one gamepad per player; keyboard for 1–2 as dev/fallback. Per-player action maps (§9). A **lobby/press-to-join** screen assigns each controller a color/car.
-- **Camera — single shared isometric view.** No split-screen at 8. A **shared iso camera dynamically zooms to fit all _live_ cars**:
-  - fixed isometric angle (see §9/§10), zoom-to-fit the live players' bounding box + margin,
-  - a **min-zoom floor** so toy cars never shrink below readable size,
-  - **clamped to arena bounds** (arenas are small, diorama-scale, fully bounded),
-  - **tightens naturally as players are eliminated** — a nice side effect of 1-life: fewer live cars → closer, tenser framing toward the finish.
-- **Spread handling:** arenas are deliberately small enough to fit at max zoom, so this mostly solves itself via level design. Soft-leash chip damage near the edge is the backup if needed.
+- **Camera — fixed shared isometric view (Gene Rally style).** No split-screen, no panning, no zooming: one static iso shot that **frames the entire arena** at all times. Cars are tiny; the whole battlefield is always readable by every player and spectator — the classic party-game screen.
+  - Framing is computed from the arena bounds at load, so arenas of different sizes each get a correct fixed shot.
+  - **Consequence for level design:** arenas must be sized so tiny cars stay readable at full-map zoom — this is the binding constraint on map size.
+  - Spread handling: not a problem by construction — everything is always on screen.
 
-_Recommendation:_ small bounded diorama arenas + shared iso zoom-to-fit + min-zoom floor. Design arenas **to the camera**, not the reverse.
+_Decision (was zoom-to-fit):_ playtesting showed a following/zooming camera reads as a single-player view, not a party screen. Fixed full-arena framing is the Gene Rally DNA and is locked in.
 
 ---
 

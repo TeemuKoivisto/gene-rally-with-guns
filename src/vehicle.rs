@@ -11,7 +11,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
-use crate::arena::ARENA_HALF;
+use crate::arena::{ARENA_HALF_X, ARENA_HALF_Z};
 use crate::input::{self, CarAction};
 use crate::weapon::WeaponSlot;
 
@@ -204,9 +204,13 @@ fn gamepad_join(
 
 /// Spawn a car (and its health bar) for a roster slot. Also used on round reset.
 pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot) {
-    // Spawn points ring the center, facing inward.
+    // Spawn points on an ellipse around the center, facing inward.
     let angle = slot.id as f32 * std::f32::consts::TAU / PLAYER_COLORS.len() as f32;
-    let pos = Vec3::new(angle.cos(), 0.0, angle.sin()) * (ARENA_HALF * 0.6);
+    let pos = Vec3::new(
+        angle.cos() * ARENA_HALF_X * 0.7,
+        0.0,
+        angle.sin() * ARENA_HALF_Z * 0.7,
+    );
     let body = assets.body_materials[slot.id % PLAYER_COLORS.len()].clone();
 
     let car = commands

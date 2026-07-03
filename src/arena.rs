@@ -4,8 +4,10 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-/// Half-extent of the square drivable area, in world units (~toy meters).
-pub const ARENA_HALF: f32 = 30.0;
+/// Half-extents of the rectangular drivable area, in world units (~toy meters).
+/// Wide 16:9-ish so it fills the fixed horizontal camera framing (design §6).
+pub const ARENA_HALF_X: f32 = 36.0;
+pub const ARENA_HALF_Z: f32 = 22.0;
 const WALL_HEIGHT: f32 = 2.0;
 const WALL_THICKNESS: f32 = 1.0;
 
@@ -22,12 +24,13 @@ fn spawn_arena(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    let size = ARENA_HALF * 2.0;
+    let size_x = ARENA_HALF_X * 2.0;
+    let size_z = ARENA_HALF_Z * 2.0;
 
     // Ground slab. Kept deliberately desaturated so player cars pop (design §10).
     commands.spawn((
         Name::new("Ground"),
-        Mesh3d(meshes.add(Cuboid::new(size, 1.0, size))),
+        Mesh3d(meshes.add(Cuboid::new(size_x, 1.0, size_z))),
         MeshMaterial3d(materials.add(StandardMaterial {
             base_color: Color::srgb(0.35, 0.37, 0.40),
             perceptual_roughness: 0.95,
@@ -35,7 +38,7 @@ fn spawn_arena(
         })),
         Transform::from_xyz(0.0, -0.5, 0.0),
         RigidBody::Static,
-        Collider::cuboid(size, 1.0, size),
+        Collider::cuboid(size_x, 1.0, size_z),
     ));
 
     // Four bounding walls.
@@ -44,24 +47,24 @@ fn spawn_arena(
         perceptual_roughness: 0.9,
         ..default()
     });
-    let wall_length = size + WALL_THICKNESS * 2.0;
+    let length_x = size_x + WALL_THICKNESS * 2.0;
     let walls = [
         // (position, dimensions)
         (
-            Vec3::new(0.0, WALL_HEIGHT / 2.0, -(ARENA_HALF + WALL_THICKNESS / 2.0)),
-            Vec3::new(wall_length, WALL_HEIGHT, WALL_THICKNESS),
+            Vec3::new(0.0, WALL_HEIGHT / 2.0, -(ARENA_HALF_Z + WALL_THICKNESS / 2.0)),
+            Vec3::new(length_x, WALL_HEIGHT, WALL_THICKNESS),
         ),
         (
-            Vec3::new(0.0, WALL_HEIGHT / 2.0, ARENA_HALF + WALL_THICKNESS / 2.0),
-            Vec3::new(wall_length, WALL_HEIGHT, WALL_THICKNESS),
+            Vec3::new(0.0, WALL_HEIGHT / 2.0, ARENA_HALF_Z + WALL_THICKNESS / 2.0),
+            Vec3::new(length_x, WALL_HEIGHT, WALL_THICKNESS),
         ),
         (
-            Vec3::new(-(ARENA_HALF + WALL_THICKNESS / 2.0), WALL_HEIGHT / 2.0, 0.0),
-            Vec3::new(WALL_THICKNESS, WALL_HEIGHT, wall_length),
+            Vec3::new(-(ARENA_HALF_X + WALL_THICKNESS / 2.0), WALL_HEIGHT / 2.0, 0.0),
+            Vec3::new(WALL_THICKNESS, WALL_HEIGHT, size_z),
         ),
         (
-            Vec3::new(ARENA_HALF + WALL_THICKNESS / 2.0, WALL_HEIGHT / 2.0, 0.0),
-            Vec3::new(WALL_THICKNESS, WALL_HEIGHT, wall_length),
+            Vec3::new(ARENA_HALF_X + WALL_THICKNESS / 2.0, WALL_HEIGHT / 2.0, 0.0),
+            Vec3::new(WALL_THICKNESS, WALL_HEIGHT, size_z),
         ),
     ];
     for (i, (pos, dim)) in walls.into_iter().enumerate() {
@@ -89,10 +92,12 @@ fn spawn_props(
     });
     // Static "buildings" to weave between.
     let blocks = [
-        (Vec3::new(-12.0, 1.5, -10.0), Vec3::new(8.0, 3.0, 6.0)),
-        (Vec3::new(14.0, 1.5, 8.0), Vec3::new(6.0, 3.0, 10.0)),
-        (Vec3::new(-8.0, 1.5, 14.0), Vec3::new(10.0, 3.0, 5.0)),
-        (Vec3::new(8.0, 1.5, -16.0), Vec3::new(5.0, 3.0, 7.0)),
+        (Vec3::new(-16.0, 1.5, -8.0), Vec3::new(8.0, 3.0, 6.0)),
+        (Vec3::new(18.0, 1.5, 7.0), Vec3::new(6.0, 3.0, 8.0)),
+        (Vec3::new(-10.0, 1.5, 12.0), Vec3::new(10.0, 3.0, 5.0)),
+        (Vec3::new(10.0, 1.5, -12.0), Vec3::new(5.0, 3.0, 6.0)),
+        (Vec3::new(28.0, 1.5, -10.0), Vec3::new(6.0, 3.0, 5.0)),
+        (Vec3::new(-28.0, 1.5, 9.0), Vec3::new(6.0, 3.0, 5.0)),
     ];
     for (i, (pos, dim)) in blocks.into_iter().enumerate() {
         commands.spawn((
