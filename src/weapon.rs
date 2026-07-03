@@ -134,6 +134,7 @@ impl Plugin for WeaponPlugin {
                     tick_lifetimes,
                     tick_damage_flash,
                     grow_explosion_vfx,
+                    draw_grenade_trajectory,
                 )
                     .chain(),
             );
@@ -469,3 +470,61 @@ fn tick_damage_flash(
         }
     }
 }
+
+/// Draw a green line showing the grenade launcher trajectory and a landing circle representing the blast area when a player holds space/fire button to charge.
+fn draw_grenade_trajectory(
+    mut gizmos: Gizmos,
+    query: Query<(&Transform, &LinearVelocity, &WeaponSlot), With<Player>>,
+) {
+    for (transform, velocity, slot) in &query {
+        if slot.kind == WeaponKind::GrenadeLauncher && slot.charge > 0.0 {
+            let forward = *transform.forward();
+            // Muzzle sits clear of the car's own collider (half-length ~1.1).
+            let muzzle = transform.translation + forward * 1.6 + Vec3::Y * 0.15;
+            // Inherit the car's planar velocity so shots stay accurate at speed.
+            let planar_vel = Vec3::new(velocity.x, 0.0, velocity.z);
+            let power = (slot.charge / GRENADE_CHARGE_TIME).powi(2);
+            let speed = GRENADE_MIN_SPEED + (GRENADE_MAX_SPEED - GRENADE_MIN_SPEED) * power;
+            // Launch in an arc.
+            let dir = forward * GRENADE_ELEVATION.cos() + Vec3::Y * GRENADE_ELEVATION.sin();
+            let init_pos = muzzle + Vec3::Y * 0.5;
+            let init_vel = planar_vel + dir * speed;
+            let gravity_accel = Vec3::new(0.0, -9.81 * GRENADE_GRAVITY, 0.0);
+
+            // Compute time of impact with ground y = 0.0:
+            // 0.5 * g * t^2 - v0.y * t - p0.y = 0
+            // Since g = 9.81 * GRENADE_GRAVITY
+            let g_magnitude = 9.81 * GRENADE_GRAVITY;
+            let discriminant = init_vel.y * init_vel.y + 2.0 * g_magnitude * init_pos.y;
+            let t_hit = if discriminant >= 0.0 {
+                (init_vel.y + discriminant.sqrt()) / g_magnitude
+            } else {
+                0.0
+            };
+            let max_t = t_hit.min(2.0); // limited by the 2.0-second fuse duration
+
+            // Generate points for the trajectory line
+            let segments = 30;
+            let mut points = Vec::with_capacity(segments + 1);
+            for i in 0..=segments {
+                let t = (i as f32 / segments as f32) * max_t;
+                let pos = init_pos + init_vel * t + 0.5 * gravity_accel * t * t;
+                points.push(pos);
+            }
+
+            // Draw trajectory path
+            gizmos.linestrip(points, Color::srgb(0.3, 0.9, 0.3));
+
+            // Draw impact/blast circle (blast radius = 5.0)
+            let impact_pos = init_pos + init_vel * max_t + 0.5 * gravity_accel * max_t * max_t;
+            let mut impact_ground = impact_pos;
+            impact_ground.y = 0.0; // clamp to ground plane
+            let circle_points = (0..=32).map(|i| {
+                let angle = i as f32 * std::f32::consts::TAU / 32.0;
+                impact_ground + Vec3::new(angle.cos() * 5.0, 0.0, angle.sin() * 5.0)
+            });
+            gizmos.linestrip(circle_points, Color::srgb(0.3, 0.9, 0.3));
+        }
+    }
+}
+
