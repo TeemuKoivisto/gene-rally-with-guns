@@ -1,11 +1,12 @@
-//! Ammo crates: fixed spawn points, sensor colliders, timed respawn (design §8).
+//! Weapon crates: fixed spawn points, sensor colliders, timed respawn.
+//! Each crate carries a weapon (color-coded); driving over it swaps your gun
+//! and refills its ammo — single-slot, grab-overwrites (design §8).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::weapon::WeaponSlot;
+use crate::weapon::{WeaponKind, WeaponSlot};
 
-const AMMO_PER_CRATE: u32 = 35;
 const RESPAWN_SECONDS: f32 = 8.0;
 
 /// Fixed crate spawn points around the arena.
@@ -17,9 +18,16 @@ const SPAWN_POINTS: [Vec3; 5] = [
     Vec3::new(26.0, 0.7, 15.0),
 ];
 
+const KINDS: [WeaponKind; 3] = [
+    WeaponKind::MachineGun,
+    WeaponKind::Bazooka,
+    WeaponKind::GrenadeLauncher,
+];
+
 #[derive(Component)]
-struct AmmoCrate {
+struct WeaponCrate {
     point: usize,
+    kind: WeaponKind,
 }
 
 /// Per-spawn-point respawn countdowns (only ticked while the point is empty).
@@ -29,7 +37,8 @@ struct RespawnTimers([f32; SPAWN_POINTS.len()]);
 #[derive(Resource)]
 struct PickupAssets {
     mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
+    /// One material per weapon kind, same order as `KINDS`.
+    materials: [Handle<StandardMaterial>; 3],
 }
 
 pub struct PickupPlugin;
@@ -47,23 +56,38 @@ fn setup_pickup_assets(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
-    commands.insert_resource(PickupAssets {
-        mesh: meshes.add(Cuboid::new(0.8, 0.8, 0.8)),
-        material: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.75, 0.1),
-            emissive: LinearRgba::rgb(1.2, 0.8, 0.1),
+    let mut make = |base: Color, emissive: LinearRgba| {
+        materials.add(StandardMaterial {
+            base_color: base,
+            emissive,
             perceptual_roughness: 0.4,
             ..default()
-        }),
+        })
+    };
+    commands.insert_resource(PickupAssets {
+        mesh: meshes.add(Cuboid::new(0.8, 0.8, 0.8)),
+        materials: [
+            // Machine gun: amber.
+            make(Color::srgb(1.0, 0.75, 0.1), LinearRgba::rgb(1.2, 0.8, 0.1)),
+            // Bazooka: red.
+            make(Color::srgb(1.0, 0.2, 0.15), LinearRgba::rgb(1.6, 0.2, 0.1)),
+            // Grenade launcher: green.
+            make(Color::srgb(0.25, 0.95, 0.3), LinearRgba::rgb(0.3, 1.5, 0.3)),
+        ],
     });
 }
 
-fn spawn_crate(commands: &mut Commands, assets: &PickupAssets, point: usize) {
+fn spawn_crate(commands: &mut Commands, assets: &PickupAssets, point: usize, seed: f32) {
+    // Pseudo-random weapon, seeded by time + point (no rand dependency).
+    let kind_index = (seed * 9.7 + point as f32 * 3.1) as usize % KINDS.len();
     commands.spawn((
-        Name::new(format!("Ammo crate {point}")),
-        AmmoCrate { point },
+        Name::new(format!("Weapon crate {point}")),
+        WeaponCrate {
+            point,
+            kind: KINDS[kind_index],
+        },
         Mesh3d(assets.mesh.clone()),
-        MeshMaterial3d(assets.material.clone()),
+        MeshMaterial3d(assets.materials[kind_index].clone()),
         Transform::from_translation(SPAWN_POINTS[point]),
         Collider::cuboid(1.0, 1.0, 1.0),
         Sensor,
@@ -77,7 +101,7 @@ fn respawn_crates(
     time: Res<Time>,
     assets: Res<PickupAssets>,
     mut timers: ResMut<RespawnTimers>,
-    crates: Query<&AmmoCrate>,
+    crates: Query<&WeaponCrate>,
 ) {
     let mut occupied = [false; SPAWN_POINTS.len()];
     for c in &crates {
@@ -89,16 +113,16 @@ fn respawn_crates(
         }
         *timer -= time.delta_secs();
         if *timer <= 0.0 {
-            spawn_crate(&mut commands, &assets, point);
+            spawn_crate(&mut commands, &assets, point, time.elapsed_secs());
         }
     }
 }
 
-/// Drive over a crate to grab its ammo.
+/// Drive over a crate to swap to its weapon (full ammo).
 fn collect_crates(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
-    crates: Query<&AmmoCrate>,
+    crates: Query<&WeaponCrate>,
     mut timers: ResMut<RespawnTimers>,
     mut cars: Query<&mut WeaponSlot>,
 ) {
@@ -108,27 +132,28 @@ fn collect_crates(
             (event.collider2, event.collider1, event.body1),
         ];
         for (maybe_crate, other, other_body) in pairs {
-            let Ok(ammo_crate) = crates.get(maybe_crate) else {
+            let Ok(weapon_crate) = crates.get(maybe_crate) else {
                 continue;
             };
             let collector = other_body.unwrap_or(other);
             let Ok(mut slot) = cars.get_mut(collector) else {
                 continue;
             };
-            slot.ammo += AMMO_PER_CRATE;
-            timers.0[ammo_crate.point] = RESPAWN_SECONDS;
+            slot.kind = weapon_crate.kind;
+            slot.ammo = weapon_crate.kind.refill_ammo();
+            timers.0[weapon_crate.point] = RESPAWN_SECONDS;
             commands.entity(maybe_crate).try_despawn();
-            info!("Ammo collected ({} rounds)", slot.ammo);
+            info!("Picked up {:?} ({} rounds)", slot.kind, slot.ammo);
         }
     }
 }
 
 /// Cosmetic idle spin + bob.
-fn spin_crates(time: Res<Time>, mut crates: Query<(&AmmoCrate, &mut Transform)>) {
+fn spin_crates(time: Res<Time>, mut crates: Query<(&WeaponCrate, &mut Transform)>) {
     let t = time.elapsed_secs();
-    for (ammo_crate, mut transform) in &mut crates {
+    for (weapon_crate, mut transform) in &mut crates {
         transform.rotate_y(time.delta_secs() * 1.5);
         transform.translation.y =
-            SPAWN_POINTS[ammo_crate.point].y + (t * 2.0 + ammo_crate.point as f32).sin() * 0.15;
+            SPAWN_POINTS[weapon_crate.point].y + (t * 2.0 + weapon_crate.point as f32).sin() * 0.15;
     }
 }

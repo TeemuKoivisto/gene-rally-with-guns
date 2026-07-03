@@ -324,7 +324,7 @@ fn cop_rams(
             if damage > 0.0 {
                 player_health.current -= damage;
                 cop_health.current -= damage * RAM_SELF_DAMAGE;
-                commands.entity(player_entity).insert(DamageFlash(0.15));
+                commands.entity(player_entity).try_insert(DamageFlash(0.15));
             }
         }
     }
@@ -346,7 +346,7 @@ fn wreck_cops(
             continue;
         }
         info!("Cop wrecked — backup incoming!");
-        commands.entity(entity).despawn();
+        commands.entity(entity).try_despawn();
 
         // Dark debris burst.
         for i in 0..8 {

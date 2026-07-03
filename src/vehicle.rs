@@ -317,7 +317,7 @@ fn update_health_bars(
 ) {
     for (bar_entity, mut bar_transform, bar, children) in &mut bars {
         let Ok((car_transform, health)) = cars.get(bar.car) else {
-            commands.entity(bar_entity).despawn();
+            commands.entity(bar_entity).try_despawn();
             continue;
         };
         bar_transform.translation = car_transform.translation + Vec3::Y * 1.8;

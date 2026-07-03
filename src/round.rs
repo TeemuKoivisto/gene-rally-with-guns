@@ -63,7 +63,7 @@ fn eliminate_dead_cars(
             continue;
         }
         info!("Player {} was wrecked!", player.id + 1);
-        commands.entity(entity).despawn();
+        commands.entity(entity).try_despawn();
 
         // Debris burst: deterministic golden-angle spread, no rand needed.
         let body = assets.body_materials[player.id % PLAYER_COLORS.len()].clone();

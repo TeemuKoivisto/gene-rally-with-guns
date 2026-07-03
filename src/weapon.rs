@@ -1,7 +1,9 @@
-//! The machine gun: front-mounted, ammo-limited, hold-to-fire (design §8).
+//! Weapons (design §8): machine gun, bazooka, grenade launcher.
 //!
-//! Projectiles are small fast rigid bodies with swept CCD; hits are resolved
-//! from avian collision events. Sensors (pickups) never block bullets.
+//! Single active slot per car; crates swap the carried weapon. Projectiles
+//! are small fast rigid bodies with swept CCD; hits resolve from avian
+//! collision events. Explosive rounds send `Explode` messages consumed by a
+//! shared AoE system (damage falloff + physics knockback + flash VFX).
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -10,33 +12,71 @@ use leafwing_input_manager::prelude::*;
 use crate::input::CarAction;
 use crate::vehicle::{Car, CarAssets, Health, Player};
 
-const FIRE_RATE: f32 = 9.0; // rounds per second
-const PROJECTILE_SPEED: f32 = 45.0;
-const PROJECTILE_DAMAGE: f32 = 9.0;
-const PROJECTILE_LIFETIME: f32 = 1.2;
-pub const START_AMMO: u32 = 25;
+pub const START_AMMO: u32 = 40;
+/// Grenade launch: elevation angle (rad) and charge-scaled speed range.
+const GRENADE_ELEVATION: f32 = 0.7;
+const GRENADE_MIN_SPEED: f32 = 9.0;
+const GRENADE_MAX_SPEED: f32 = 26.0;
+const GRENADE_CHARGE_TIME: f32 = 1.1;
 
-/// A car's (single, design §8) weapon slot. M2: machine gun only.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum WeaponKind {
+    MachineGun,
+    Bazooka,
+    GrenadeLauncher,
+}
+
+impl WeaponKind {
+    pub fn refill_ammo(self) -> u32 {
+        match self {
+            Self::MachineGun => 40,
+            Self::Bazooka => 5,
+            Self::GrenadeLauncher => 8,
+        }
+    }
+
+    fn cooldown(self) -> f32 {
+        match self {
+            Self::MachineGun => 1.0 / 9.0,
+            Self::Bazooka => 1.0,
+            Self::GrenadeLauncher => 0.45,
+        }
+    }
+}
+
+/// A car's (single, design §8) weapon slot.
 #[derive(Component)]
 pub struct WeaponSlot {
+    pub kind: WeaponKind,
     pub ammo: u32,
     cooldown: f32,
+    /// Grenade launcher: seconds the fire button has been held.
+    charge: f32,
 }
 
 impl Default for WeaponSlot {
     fn default() -> Self {
         Self {
+            kind: WeaponKind::MachineGun,
             ammo: START_AMMO,
             cooldown: 0.0,
+            charge: 0.0,
         }
     }
 }
 
 #[derive(Component)]
 pub struct Projectile {
-    damage: f32,
+    /// Damage applied directly to whatever the round hits.
+    direct_damage: f32,
     shooter: Entity,
+    /// `Some((radius, damage))`: also explode on impact.
+    explosive: Option<(f32, f32)>,
 }
+
+/// Timed detonation backup for grenades (so duds can't lie around).
+#[derive(Component)]
+struct Fuse(f32);
 
 /// Generic despawn-after-seconds, also used by debris.
 #[derive(Component)]
@@ -48,19 +88,52 @@ pub struct DamageFlash(pub f32);
 
 const FLASH_TIME: f32 = 0.15;
 
+/// AoE detonation request: consumed by `resolve_explosions`.
+#[derive(Message)]
+pub struct Explode {
+    pub pos: Vec3,
+    pub radius: f32,
+    pub damage: f32,
+}
+
+/// Growing flash sphere left by an explosion.
+#[derive(Component)]
+struct ExplosionVfx {
+    age: f32,
+    radius: f32,
+}
+
 #[derive(Resource)]
 struct ProjectileAssets {
-    mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
+    tracer_mesh: Handle<Mesh>,
+    tracer_material: Handle<StandardMaterial>,
+    rocket_mesh: Handle<Mesh>,
+    rocket_material: Handle<StandardMaterial>,
+    grenade_mesh: Handle<Mesh>,
+    grenade_material: Handle<StandardMaterial>,
+    explosion_mesh: Handle<Mesh>,
+    explosion_material: Handle<StandardMaterial>,
 }
 
 pub struct WeaponPlugin;
 
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_projectile_assets)
+        app.add_message::<Explode>()
+            .add_systems(Startup, setup_projectile_assets)
             .add_systems(FixedUpdate, fire_weapons)
-            .add_systems(Update, (resolve_projectile_hits, tick_lifetimes, tick_damage_flash));
+            .add_systems(
+                Update,
+                (
+                    resolve_projectile_hits,
+                    tick_fuses,
+                    resolve_explosions,
+                    tick_lifetimes,
+                    tick_damage_flash,
+                    grow_explosion_vfx,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -70,11 +143,34 @@ fn setup_projectile_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.insert_resource(ProjectileAssets {
-        mesh: meshes.add(Sphere::new(0.09)),
-        material: materials.add(StandardMaterial {
-            base_color: Color::srgb(1.0, 0.9, 0.3),
-            emissive: LinearRgba::rgb(4.0, 3.2, 0.6),
+        // Fat, bright tracer so the MG stream is readable from the iso camera.
+        tracer_mesh: meshes.add(Cuboid::new(0.14, 0.14, 0.55)),
+        tracer_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(1.0, 0.95, 0.2),
+            emissive: LinearRgba::rgb(8.0, 7.0, 1.0),
             unlit: true,
+            ..default()
+        }),
+        rocket_mesh: meshes.add(Cuboid::new(0.2, 0.2, 0.8)),
+        rocket_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.9, 0.35, 0.15),
+            emissive: LinearRgba::rgb(5.0, 1.2, 0.2),
+            unlit: true,
+            ..default()
+        }),
+        grenade_mesh: meshes.add(Sphere::new(0.18)),
+        grenade_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.3, 0.9, 0.3),
+            emissive: LinearRgba::rgb(0.6, 3.5, 0.6),
+            unlit: true,
+            ..default()
+        }),
+        explosion_mesh: meshes.add(Sphere::new(1.0)),
+        explosion_material: materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.6, 0.15, 0.85),
+            emissive: LinearRgba::rgb(6.0, 2.5, 0.4),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
             ..default()
         }),
     });
@@ -98,45 +194,110 @@ fn fire_weapons(
     let dt = time.delta_secs();
     for (car, actions, transform, velocity, mut slot) in &mut cars {
         slot.cooldown = (slot.cooldown - dt).max(0.0);
-        if !actions.pressed(&CarAction::Fire) || slot.cooldown > 0.0 || slot.ammo == 0 {
-            continue;
-        }
-        slot.cooldown = 1.0 / FIRE_RATE;
-        slot.ammo -= 1;
+        let pressed = actions.pressed(&CarAction::Fire);
+        let released = actions.just_released(&CarAction::Fire);
+        let ready = slot.cooldown <= 0.0 && slot.ammo > 0;
 
         let forward = *transform.forward();
-        // Muzzle sits clear of the car's own collider (half-length 1.0).
-        let muzzle = transform.translation + forward * 1.5 + Vec3::Y * 0.1;
+        // Muzzle sits clear of the car's own collider (half-length ~1.1).
+        let muzzle = transform.translation + forward * 1.6 + Vec3::Y * 0.15;
         // Inherit the car's planar velocity so shots stay accurate at speed.
         let planar_vel = Vec3::new(velocity.x, 0.0, velocity.z);
 
-        commands.spawn((
-            Name::new("Bullet"),
-            Projectile {
-                damage: PROJECTILE_DAMAGE,
-                shooter: car,
-            },
-            Mesh3d(assets.mesh.clone()),
-            MeshMaterial3d(assets.material.clone()),
-            Transform::from_translation(muzzle),
-            RigidBody::Dynamic,
-            Collider::sphere(0.09),
-            Mass(0.15),
-            GravityScale(0.0),
-            SweptCcd::default(),
-            LinearVelocity(planar_vel + forward * PROJECTILE_SPEED),
-            CollisionEventsEnabled,
-            Lifetime(PROJECTILE_LIFETIME),
-        ));
+        match slot.kind {
+            WeaponKind::MachineGun => {
+                if pressed && ready {
+                    slot.cooldown = slot.kind.cooldown();
+                    slot.ammo -= 1;
+                    commands.spawn((
+                        Name::new("Tracer"),
+                        Projectile {
+                            direct_damage: 9.0,
+                            shooter: car,
+                            explosive: None,
+                        },
+                        Mesh3d(assets.tracer_mesh.clone()),
+                        MeshMaterial3d(assets.tracer_material.clone()),
+                        Transform::from_translation(muzzle).looking_to(forward, Vec3::Y),
+                        projectile_physics(0.09, planar_vel + forward * 45.0, 0.0),
+                        Lifetime(1.2),
+                    ));
+                }
+            }
+            WeaponKind::Bazooka => {
+                if pressed && ready {
+                    slot.cooldown = slot.kind.cooldown();
+                    slot.ammo -= 1;
+                    commands.spawn((
+                        Name::new("Rocket"),
+                        Projectile {
+                            direct_damage: 25.0,
+                            shooter: car,
+                            explosive: Some((3.5, 40.0)),
+                        },
+                        Mesh3d(assets.rocket_mesh.clone()),
+                        MeshMaterial3d(assets.rocket_material.clone()),
+                        Transform::from_translation(muzzle).looking_to(forward, Vec3::Y),
+                        projectile_physics(0.12, planar_vel + forward * 28.0, 0.0),
+                        Lifetime(2.0),
+                    ));
+                }
+            }
+            WeaponKind::GrenadeLauncher => {
+                if pressed && slot.ammo > 0 {
+                    // Hold to charge the throw.
+                    slot.charge = (slot.charge + dt).min(GRENADE_CHARGE_TIME);
+                } else if released && ready {
+                    let power = slot.charge / GRENADE_CHARGE_TIME;
+                    slot.charge = 0.0;
+                    slot.cooldown = slot.kind.cooldown();
+                    slot.ammo -= 1;
+                    let speed =
+                        GRENADE_MIN_SPEED + (GRENADE_MAX_SPEED - GRENADE_MIN_SPEED) * power;
+                    // Launch in an arc: clears the 3-high buildings mid-charge.
+                    let dir = forward * GRENADE_ELEVATION.cos() + Vec3::Y * GRENADE_ELEVATION.sin();
+                    commands.spawn((
+                        Name::new("Grenade"),
+                        Projectile {
+                            direct_damage: 10.0,
+                            shooter: car,
+                            explosive: Some((4.5, 45.0)),
+                        },
+                        Mesh3d(assets.grenade_mesh.clone()),
+                        MeshMaterial3d(assets.grenade_material.clone()),
+                        Transform::from_translation(muzzle + Vec3::Y * 0.5),
+                        projectile_physics(0.18, planar_vel + dir * speed, 2.0),
+                        Fuse(2.5),
+                        Lifetime(6.0),
+                    ));
+                } else {
+                    slot.charge = 0.0;
+                }
+            }
+        }
     }
 }
 
-/// Consume collision events involving projectiles: damage what they hit
-/// (if it has Health), flash it, and despawn the bullet.
+/// Common physics bundle for all rounds. `gravity` 0 = flies flat.
+fn projectile_physics(radius: f32, velocity: Vec3, gravity: f32) -> impl Bundle {
+    (
+        RigidBody::Dynamic,
+        Collider::sphere(radius),
+        Mass(0.15),
+        GravityScale(gravity),
+        SweptCcd::default(),
+        LinearVelocity(velocity),
+        CollisionEventsEnabled,
+    )
+}
+
+/// Consume collision events involving projectiles: apply direct damage,
+/// request the AoE if explosive, despawn the round.
 fn resolve_projectile_hits(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
-    projectiles: Query<&Projectile>,
+    mut explosions: MessageWriter<Explode>,
+    projectiles: Query<(&Projectile, &Transform)>,
     sensors: Query<(), With<Sensor>>,
     players: Query<(), With<Player>>,
     mut healths: Query<&mut Health>,
@@ -148,7 +309,7 @@ fn resolve_projectile_hits(
             (event.collider2, event.collider1, event.body1),
         ];
         for (maybe_bullet, other, other_body) in pairs {
-            let Ok(projectile) = projectiles.get(maybe_bullet) else {
+            let Ok((projectile, bullet_transform)) = projectiles.get(maybe_bullet) else {
                 continue;
             };
             // Pickups and other sensors don't stop bullets.
@@ -161,13 +322,109 @@ fn resolve_projectile_hits(
                 continue;
             }
             if let Ok(mut health) = healths.get_mut(target) {
-                health.current -= projectile.damage;
+                health.current -= projectile.direct_damage;
                 // Flash only players: the flash tint runs on body color materials.
+                // try_*: the target may be despawned by another system this frame.
                 if players.contains(target) {
-                    commands.entity(target).insert(DamageFlash(FLASH_TIME));
+                    commands.entity(target).try_insert(DamageFlash(FLASH_TIME));
                 }
             }
+            if let Some((radius, damage)) = projectile.explosive {
+                explosions.write(Explode {
+                    pos: bullet_transform.translation,
+                    radius,
+                    damage,
+                });
+            }
             commands.entity(maybe_bullet).try_despawn();
+        }
+    }
+}
+
+/// Grenade fuse: detonate in place when the timer runs out.
+fn tick_fuses(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut explosions: MessageWriter<Explode>,
+    mut fuses: Query<(Entity, &mut Fuse, &Transform, &Projectile)>,
+) {
+    for (entity, mut fuse, transform, projectile) in &mut fuses {
+        fuse.0 -= time.delta_secs();
+        if fuse.0 > 0.0 {
+            continue;
+        }
+        if let Some((radius, damage)) = projectile.explosive {
+            explosions.write(Explode {
+                pos: transform.translation,
+                radius,
+                damage,
+            });
+        }
+        commands.entity(entity).try_despawn();
+    }
+}
+
+/// Shared AoE: falloff damage to everything with Health (shooter included —
+/// mind your own grenades), knockback to every dynamic body, flash VFX.
+fn resolve_explosions(
+    mut commands: Commands,
+    mut explosions: MessageReader<Explode>,
+    assets: Res<ProjectileAssets>,
+    players: Query<(), With<Player>>,
+    mut healths: Query<(Entity, &Transform, &mut Health)>,
+    mut bodies: Query<(&Transform, &mut LinearVelocity), Without<Sensor>>,
+) {
+    for explosion in explosions.read() {
+        // Damage with linear falloff.
+        for (entity, transform, mut health) in &mut healths {
+            let dist = (transform.translation - explosion.pos).xz().length();
+            if dist > explosion.radius {
+                continue;
+            }
+            let falloff = 1.0 - dist / explosion.radius;
+            health.current -= explosion.damage * (0.25 + 0.75 * falloff);
+            if players.contains(entity) {
+                commands.entity(entity).try_insert(DamageFlash(FLASH_TIME));
+            }
+        }
+        // Knockback on anything dynamic nearby (cars, crates, debris).
+        for (transform, mut velocity) in &mut bodies {
+            let delta = transform.translation - explosion.pos;
+            let dist = delta.xz().length();
+            if dist > explosion.radius || dist < 0.01 {
+                continue;
+            }
+            let falloff = 1.0 - dist / explosion.radius;
+            let push = delta.normalize_or_zero() * 14.0 * falloff;
+            velocity.0 += push + Vec3::Y * 5.0 * falloff;
+        }
+        // Flash sphere.
+        commands.spawn((
+            Name::new("Explosion"),
+            ExplosionVfx {
+                age: 0.0,
+                radius: explosion.radius,
+            },
+            Mesh3d(assets.explosion_mesh.clone()),
+            MeshMaterial3d(assets.explosion_material.clone()),
+            Transform::from_translation(explosion.pos).with_scale(Vec3::splat(0.3)),
+        ));
+    }
+}
+
+fn grow_explosion_vfx(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut vfx: Query<(Entity, &mut ExplosionVfx, &mut Transform)>,
+) {
+    const GROW_TIME: f32 = 0.22;
+    const HOLD_TIME: f32 = 0.3;
+    for (entity, mut explosion, mut transform) in &mut vfx {
+        explosion.age += time.delta_secs();
+        let t = (explosion.age / GROW_TIME).min(1.0);
+        transform.scale = Vec3::splat(0.3 + (explosion.radius - 0.3) * t);
+        if explosion.age > HOLD_TIME {
+            commands.entity(entity).try_despawn();
         }
     }
 }
@@ -205,7 +462,7 @@ fn tick_damage_flash(
             }
         }
         if flash.0 <= 0.0 {
-            commands.entity(entity).remove::<DamageFlash>();
+            commands.entity(entity).try_remove::<DamageFlash>();
         }
     }
 }
