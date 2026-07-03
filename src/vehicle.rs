@@ -79,6 +79,8 @@ pub struct Car;
 #[derive(Component)]
 pub struct Player {
     pub id: usize,
+    /// Index into PLAYER_COLORS (chosen in the lobby).
+    pub color: usize,
 }
 
 #[derive(Component)]
@@ -103,6 +105,12 @@ pub enum InputSource {
 pub struct PlayerSlot {
     pub id: usize,
     pub source: InputSource,
+    /// Index into lobby::NAMES.
+    pub name_index: usize,
+    /// Index into PLAYER_COLORS.
+    pub color_index: usize,
+    /// Lobby ready flag; meaningless once in game.
+    pub ready: bool,
 }
 
 /// Everyone who has joined the session (survives round resets).
@@ -140,8 +148,8 @@ pub struct VehiclePlugin;
 impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Roster>()
-            .add_systems(Startup, (setup_car_assets, spawn_keyboard_player).chain())
-            .add_systems(Update, (gamepad_join, update_health_bars))
+            .add_systems(Startup, setup_car_assets)
+            .add_systems(Update, update_health_bars)
             .add_systems(FixedUpdate, drive_cars);
     }
 }
@@ -189,62 +197,26 @@ fn setup_car_assets(
     });
 }
 
-fn spawn_keyboard_player(
-    mut commands: Commands,
-    assets: Res<CarAssets>,
-    mut roster: ResMut<Roster>,
-) {
-    let slot = PlayerSlot {
-        id: 0,
-        source: InputSource::Keyboard,
-    };
-    spawn_car(&mut commands, &assets, &slot);
-    roster.players.push(slot);
-}
-
-/// Press South (A / Cross) on an unassigned pad to join with a new car.
-fn gamepad_join(
-    mut commands: Commands,
-    gamepads: Query<(Entity, &Gamepad)>,
-    assets: Res<CarAssets>,
-    mut roster: ResMut<Roster>,
-) {
-    for (pad_entity, gamepad) in &gamepads {
-        let taken = roster
-            .players
-            .iter()
-            .any(|p| p.source == InputSource::Gamepad(pad_entity));
-        if roster.players.len() < PLAYER_COLORS.len()
-            && gamepad.just_pressed(GamepadButton::South)
-            && !taken
-        {
-            let slot = PlayerSlot {
-                id: roster.players.len(),
-                source: InputSource::Gamepad(pad_entity),
-            };
-            spawn_car(&mut commands, &assets, &slot);
-            info!("Player {} joined on gamepad {pad_entity:?}", slot.id + 1);
-            roster.players.push(slot);
-        }
-    }
-}
-
-/// Spawn a car (and its health bar) for a roster slot. Also used on round reset.
-pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot) {
+/// Spawn a car (and its health bar) for a roster slot; `position` is the
+/// slot's index on the spawn ellipse (roster order). Used on round start/reset.
+pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot, position: usize) {
     // Spawn points on an ellipse around the center, facing inward.
-    let angle = slot.id as f32 * std::f32::consts::TAU / PLAYER_COLORS.len() as f32;
+    let angle = position as f32 * std::f32::consts::TAU / PLAYER_COLORS.len() as f32;
     let pos = Vec3::new(
         angle.cos() * ARENA_HALF_X * 0.7,
         0.0,
         angle.sin() * ARENA_HALF_Z * 0.7,
     );
-    let body = assets.body_materials[slot.id % PLAYER_COLORS.len()].clone();
+    let body = assets.body_materials[slot.color_index % PLAYER_COLORS.len()].clone();
 
     let car = commands
         .spawn((
             Name::new(format!("Car P{}", slot.id + 1)),
             Car,
-            Player { id: slot.id },
+            Player {
+                id: slot.id,
+                color: slot.color_index,
+            },
             Health {
                 current: MAX_HEALTH,
                 max: MAX_HEALTH,

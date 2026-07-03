@@ -81,7 +81,7 @@ pub struct CopPlugin;
 
 impl Plugin for CopPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, (setup_cop_assets, spawn_first_cop).chain())
+        app.add_systems(Startup, setup_cop_assets)
             .add_systems(FixedUpdate, (cop_ai, cop_drive).chain())
             .add_systems(Update, (cop_rams, wreck_cops));
     }
@@ -125,10 +125,6 @@ fn setup_cop_assets(
             ..default()
         }),
     });
-}
-
-fn spawn_first_cop(mut commands: Commands, cop_assets: Res<CopAssets>, car_assets: Res<CarAssets>) {
-    spawn_cop(&mut commands, &cop_assets, &car_assets, COP_SPAWN_POINTS[0]);
 }
 
 /// Pick a pseudo-random spawn point (no rand dependency; time-seeded).

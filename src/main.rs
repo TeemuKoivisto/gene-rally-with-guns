@@ -7,6 +7,7 @@ mod arena;
 mod camera;
 mod cop;
 mod input;
+mod lobby;
 mod nav;
 mod pickup;
 mod round;
@@ -40,6 +41,7 @@ fn main() {
             ..default()
         })
         .add_plugins((
+            lobby::LobbyPlugin,
             arena::ArenaPlugin,
             vehicle::VehiclePlugin,
             camera::CameraPlugin,

@@ -5,7 +5,8 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 
 use crate::cop::{self, CopAssets, CopCar};
-use crate::vehicle::{self, Car, CarAssets, Health, Player, Roster, PLAYER_COLORS};
+use crate::lobby::{GameState, NAMES};
+use crate::vehicle::{self, Car, CarAssets, Health, HealthBar, Player, Roster, PLAYER_COLORS};
 use crate::weapon::{Lifetime, Projectile};
 
 const RESET_SECONDS: f32 = 3.0;
@@ -30,6 +31,8 @@ impl Plugin for RoundPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RoundPhase>()
             .add_systems(Startup, spawn_banner)
+            .add_systems(OnEnter(GameState::InGame), enter_game)
+            .add_systems(OnExit(GameState::InGame), cleanup_game)
             .add_systems(
                 Update,
                 (
@@ -38,9 +41,57 @@ impl Plugin for RoundPlugin {
                     restart_on_key,
                     reset_round,
                 )
-                    .chain(),
+                    .chain()
+                    .run_if(in_state(GameState::InGame)),
             );
     }
+}
+
+/// Entering from the lobby: start the first round for the current roster.
+fn enter_game(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut phase: ResMut<RoundPhase>,
+    assets: Res<CarAssets>,
+    cop_assets: Res<CopAssets>,
+    roster: Res<Roster>,
+    leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
+    banner: Single<&mut Text, With<Banner>>,
+) {
+    restart_round(
+        &mut commands,
+        &time,
+        &mut phase,
+        &assets,
+        &cop_assets,
+        &roster,
+        &leftovers,
+        &mut *banner.into_inner(),
+    );
+}
+
+/// Returning to the lobby: clear the battlefield (bars self-clean via their
+/// car check, but sweep them too in case their car is already gone).
+fn cleanup_game(
+    mut commands: Commands,
+    mut phase: ResMut<RoundPhase>,
+    leftovers: Query<
+        Entity,
+        Or<(
+            With<Car>,
+            With<Projectile>,
+            With<CopCar>,
+            With<Lifetime>,
+            With<HealthBar>,
+        )>,
+    >,
+    banner: Single<&mut Text, With<Banner>>,
+) {
+    for entity in &leftovers {
+        commands.entity(entity).try_despawn();
+    }
+    banner.into_inner().0 = String::new();
+    *phase = RoundPhase::Active;
 }
 
 fn spawn_banner(mut commands: Commands) {
@@ -75,7 +126,7 @@ fn eliminate_dead_cars(
         commands.entity(entity).try_despawn();
 
         // Debris burst: deterministic golden-angle spread, no rand needed.
-        let body = assets.body_materials[player.id % PLAYER_COLORS.len()].clone();
+        let body = assets.body_materials[player.color % PLAYER_COLORS.len()].clone();
         for i in 0..DEBRIS_PIECES {
             let angle = i as f32 * 2.399963 + player.id as f32;
             let speed = 3.0 + (i % 3) as f32 * 2.0;
@@ -119,9 +170,15 @@ fn watch_for_winner(
     let (mut text, mut color) = banner.into_inner();
     match alive.first() {
         Some(player) => {
-            text.0 = format!("Player {} wins the round!", player.id + 1);
-            color.0 = PLAYER_COLORS[player.id % PLAYER_COLORS.len()];
-            info!("Player {} wins the round!", player.id + 1);
+            let name = roster
+                .players
+                .iter()
+                .find(|slot| slot.id == player.id)
+                .map(|slot| NAMES[slot.name_index % NAMES.len()])
+                .unwrap_or("Player ?");
+            text.0 = format!("{name} wins the round!");
+            color.0 = PLAYER_COLORS[player.color % PLAYER_COLORS.len()];
+            info!("{name} wins the round!");
         }
         None => {
             text.0 = "Everyone's wrecked — draw!".to_string();
@@ -206,8 +263,8 @@ fn restart_round(
     for entity in leftovers {
         commands.entity(entity).try_despawn();
     }
-    for slot in &roster.players {
-        vehicle::spawn_car(commands, assets, slot);
+    for (position, slot) in roster.players.iter().enumerate() {
+        vehicle::spawn_car(commands, assets, slot, position);
     }
     let pos = cop::pick_spawn_point(time.elapsed_secs(), 0);
     cop::spawn_cop(commands, cop_assets, assets, pos);
