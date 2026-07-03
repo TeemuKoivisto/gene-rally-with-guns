@@ -27,6 +27,7 @@ const COP_DRIVE: DriveParams = DriveParams {
     max_yaw_rate: 2.3,
     full_steer_at: 0.35,
     yaw_response: 10.0,
+    min_steer_authority: 0.0,
 };
 
 const COP_HEALTH: f32 = 120.0;

@@ -37,20 +37,25 @@ pub struct DriveParams {
     /// How quickly the actual yaw rate follows the steering input (1/s).
     /// Lower = smoother, heavier turn-in; higher = twitchier.
     pub yaw_response: f32,
+    /// Floor on the speed-based steering authority fraction (0..1). Stops
+    /// steering from going dead at standstill while high-speed grip fade still
+    /// enables corner slides.
+    pub min_steer_authority: f32,
 }
 
 pub const PLAYER_DRIVE: DriveParams = DriveParams {
     max_speed: 18.0,
     max_reverse_speed: 8.0,
-    engine_accel: 28.0,
-    brake_accel: 50.0,
-    coast_drag: 6.0,
+    engine_accel: 40.0,
+    brake_accel: 58.0,
+    coast_drag: 7.0,
     grip_low_speed: 9.0,
-    grip_high_speed: 3.5,
+    grip_high_speed: 3.0,
     handbrake_grip: 1.5,
-    max_yaw_rate: 2.8,
-    full_steer_at: 0.3,
-    yaw_response: 7.0,
+    max_yaw_rate: 3.4,
+    full_steer_at: 0.2,
+    yaw_response: 12.0,
+    min_steer_authority: 0.42,
 };
 
 pub const MAX_HEALTH: f32 = 100.0;
@@ -410,8 +415,8 @@ pub fn apply_drive(
 
     // Steering: authority ramps up with speed, flips when reversing, and the
     // yaw rate eases toward the target instead of snapping (turn-in inertia).
-    let authority =
-        (fwd_speed.abs() / (params.max_speed * params.full_steer_at)).clamp(0.0, 1.0);
+    let authority = (fwd_speed.abs() / (params.max_speed * params.full_steer_at))
+        .clamp(params.min_steer_authority, 1.0);
     let direction = if fwd_speed < -0.5 { -1.0 } else { 1.0 };
     let target_yaw = -steer * params.max_yaw_rate * authority * direction;
     let blend = 1.0 - (-params.yaw_response * dt).exp();
