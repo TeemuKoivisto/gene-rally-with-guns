@@ -4,6 +4,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::cop::{self, CopAssets, CopCar};
 use crate::vehicle::{self, Car, CarAssets, Health, Player, Roster, PLAYER_COLORS};
 use crate::weapon::{Lifetime, Projectile};
 
@@ -130,8 +131,9 @@ fn reset_round(
     time: Res<Time>,
     mut phase: ResMut<RoundPhase>,
     assets: Res<CarAssets>,
+    cop_assets: Res<CopAssets>,
     roster: Res<Roster>,
-    leftovers: Query<Entity, Or<(With<Car>, With<Projectile>)>>,
+    leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>)>>,
     banner: Single<&mut Text, With<Banner>>,
 ) {
     let RoundPhase::Over { countdown } = &mut *phase else {
@@ -148,6 +150,9 @@ fn reset_round(
     for slot in &roster.players {
         vehicle::spawn_car(&mut commands, &assets, slot);
     }
+    // Fresh round, fresh single patrol car.
+    let pos = cop::pick_spawn_point(time.elapsed_secs(), 0);
+    cop::spawn_cop(&mut commands, &cop_assets, &assets, pos);
     banner.into_inner().0 = String::new();
     *phase = RoundPhase::Active;
 }

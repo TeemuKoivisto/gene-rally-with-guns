@@ -5,6 +5,7 @@
 
 mod arena;
 mod camera;
+mod cop;
 mod input;
 mod pickup;
 mod round;
@@ -44,6 +45,7 @@ fn main() {
             weapon::WeaponPlugin,
             pickup::PickupPlugin,
             round::RoundPlugin,
+            cop::CopPlugin,
         ))
         .run();
 }

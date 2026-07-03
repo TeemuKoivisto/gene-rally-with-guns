@@ -163,6 +163,8 @@ _Balance note:_ frequent drops + limited ammo keeps power flowing without snowba
 
 Cops are a **shared hazard**: wreck the patrol blocking a pickup, bait a cop into a rival, or lead a chase into a gas pump. But every cop you kill raises the threat for the whole arena.
 
+**Cop combat model:** cops don't shoot — they **ram**. They are heavier than player cars, so collisions with them hurt a lot; the counterplay is guns and agility, theirs is mass and numbers. **Prototype escalation ("hydra rule"):** wrecking a cop spawns **two** replacements (capped). The threat-meter unit tiers (§ table above) generalize this later.
+
 ---
 
 ## 9. Technical architecture (Bevy)
@@ -227,6 +229,7 @@ GameApp
 - **View:** **3D isometric**, fixed camera angle, diorama scale — like a Hot Wheels play set seen from above at a tilt. Optional subtle **tilt-shift / depth-of-field** to sell the "tiny toys" fantasy.
 - **Aesthetic:** modern low-poly, **candy-bright saturated** colors, clean rounded shapes, chunky readable silhouettes. Cars read as glossy die-cast toys.
 - **Legibility first:** 8 distinct **player colors** on car bodies + a small floating **indicator ring/arrow** per car. The map is desaturated relative to the cars so players always pop. Cops are unmistakable (black/white + flashing lights).
+- **Damage feedback — no health bars (final game).** Health reads on the car itself: progressive dents/scuffs/missing panels as it takes hits, **dark smoke** trailing when badly hurt, fire just before it wrecks. Diegetic, readable at diorama distance, and keeps the screen free of floating UI. _The prototype's floating bars are a placeholder until this lands (post-slice polish)._
 - **Tone:** loud, comedic toy-scale mayhem — not gritty. Saturday-morning chaos with sirens.
 - **Audio:** chunky engine loops, punchy weapon SFX, **sirens that swell with the threat level**, and **dynamic music** that intensifies as cops escalate and as a level nears its last survivors. A blindfolded player should feel the threat rising.
 

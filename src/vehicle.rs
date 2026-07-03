@@ -15,21 +15,35 @@ use crate::arena::{ARENA_HALF_X, ARENA_HALF_Z};
 use crate::input::{self, CarAction};
 use crate::weapon::WeaponSlot;
 
-// --- Handling tuning. ---
-const MAX_SPEED: f32 = 18.0;
-const MAX_REVERSE_SPEED: f32 = 8.0;
-const ENGINE_ACCEL: f32 = 28.0;
-const BRAKE_ACCEL: f32 = 50.0;
-/// Passive deceleration when coasting (m/s^2).
-const COAST_DRAG: f32 = 6.0;
-/// How fast lateral (sideways) velocity is bled off, per second. High = grippy.
-const GRIP: f32 = 12.0;
-/// Grip while the handbrake is held: low = big slidey drifts.
-const HANDBRAKE_GRIP: f32 = 1.5;
-/// Max yaw rate in rad/s at full steering lock.
-const MAX_YAW_RATE: f32 = 2.8;
-/// Fraction of MAX_SPEED at which steering reaches full authority.
-const FULL_STEER_AT: f32 = 0.3;
+/// Arcade handling parameters; players and cops share the model, not the numbers.
+pub struct DriveParams {
+    pub max_speed: f32,
+    pub max_reverse_speed: f32,
+    pub engine_accel: f32,
+    pub brake_accel: f32,
+    /// Passive deceleration when coasting (m/s^2).
+    pub coast_drag: f32,
+    /// How fast lateral (sideways) velocity is bled off, per second. High = grippy.
+    pub grip: f32,
+    /// Grip while the handbrake is held: low = big slidey drifts.
+    pub handbrake_grip: f32,
+    /// Max yaw rate in rad/s at full steering lock.
+    pub max_yaw_rate: f32,
+    /// Fraction of max_speed at which steering reaches full authority.
+    pub full_steer_at: f32,
+}
+
+pub const PLAYER_DRIVE: DriveParams = DriveParams {
+    max_speed: 18.0,
+    max_reverse_speed: 8.0,
+    engine_accel: 28.0,
+    brake_accel: 50.0,
+    coast_drag: 6.0,
+    grip: 12.0,
+    handbrake_grip: 1.5,
+    max_yaw_rate: 2.8,
+    full_steer_at: 0.3,
+};
 
 pub const MAX_HEALTH: f32 = 100.0;
 const HEALTH_BAR_WIDTH: f32 = 1.4;
@@ -257,11 +271,15 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot)
         })
         .id();
 
-    // World-aligned health bar floating above the car (not a child: it must
-    // not rotate with the chassis).
+    spawn_health_bar(commands, assets, car, pos);
+}
+
+/// World-aligned health bar floating above a vehicle (not a child: it must
+/// not rotate with the chassis). Used for players and cops alike.
+pub fn spawn_health_bar(commands: &mut Commands, assets: &CarAssets, car: Entity, pos: Vec3) {
     commands
         .spawn((
-            Name::new(format!("Health bar P{}", slot.id + 1)),
+            Name::new("Health bar"),
             HealthBar { car },
             Transform::from_translation(pos + Vec3::Y * 1.8),
             Visibility::default(),
@@ -285,9 +303,9 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot)
 /// whose car is gone (covers every despawn path).
 fn update_health_bars(
     mut commands: Commands,
-    cars: Query<(&Transform, &Health), With<Car>>,
-    mut bars: Query<(Entity, &mut Transform, &HealthBar, &Children), Without<Car>>,
-    mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>, Without<Car>)>,
+    cars: Query<(&Transform, &Health), (Without<HealthBar>, Without<HealthBarFill>)>,
+    mut bars: Query<(Entity, &mut Transform, &HealthBar, &Children), Without<HealthBarFill>>,
+    mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>)>,
 ) {
     for (bar_entity, mut bar_transform, bar, children) in &mut bars {
         let Ok((car_transform, health)) = cars.get(bar.car) else {
@@ -320,39 +338,69 @@ fn drive_cars(
 ) {
     let dt = time.delta_secs();
     for (actions, transform, mut lin_vel, mut ang_vel) in &mut cars {
-        let throttle = actions.clamped_value(&CarAction::Throttle);
-        let steer = actions.clamped_value(&CarAction::Steer);
-        let handbrake = actions.pressed(&CarAction::Handbrake);
-
-        let forward = *transform.forward();
-        let right = *transform.right();
-
-        // Decompose planar velocity into forward + lateral parts.
-        let v = lin_vel.0;
-        let planar = Vec3::new(v.x, 0.0, v.z);
-        let mut fwd_speed = planar.dot(forward);
-        let mut lat_speed = planar.dot(right);
-
-        // Throttle / brake / coast.
-        if throttle.abs() > 0.01 {
-            let opposing = throttle.signum() != fwd_speed.signum() && fwd_speed.abs() > 0.5;
-            let accel = if opposing { BRAKE_ACCEL } else { ENGINE_ACCEL };
-            fwd_speed += throttle * accel * dt;
-        } else {
-            let drag = COAST_DRAG * dt;
-            fwd_speed -= fwd_speed.clamp(-drag, drag);
-        }
-        fwd_speed = fwd_speed.clamp(-MAX_REVERSE_SPEED, MAX_SPEED);
-
-        // Lateral grip: bleed sideways velocity; handbrake lets it live (drift).
-        let grip = if handbrake { HANDBRAKE_GRIP } else { GRIP };
-        lat_speed *= (1.0 - grip * dt).max(0.0);
-
-        lin_vel.0 = forward * fwd_speed + right * lat_speed + Vec3::Y * v.y;
-
-        // Steering: authority ramps up with speed, flips when reversing.
-        let authority = (fwd_speed.abs() / (MAX_SPEED * FULL_STEER_AT)).clamp(0.0, 1.0);
-        let direction = if fwd_speed < -0.5 { -1.0 } else { 1.0 };
-        ang_vel.y = -steer * MAX_YAW_RATE * authority * direction;
+        apply_drive(
+            dt,
+            &PLAYER_DRIVE,
+            actions.clamped_value(&CarAction::Throttle),
+            actions.clamped_value(&CarAction::Steer),
+            actions.pressed(&CarAction::Handbrake),
+            transform,
+            &mut lin_vel,
+            &mut ang_vel,
+        );
     }
+}
+
+/// One fixed tick of the arcade plane-force model (see module docs).
+/// Shared by player driving and cop AI.
+#[allow(clippy::too_many_arguments)]
+pub fn apply_drive(
+    dt: f32,
+    params: &DriveParams,
+    throttle: f32,
+    steer: f32,
+    handbrake: bool,
+    transform: &Transform,
+    lin_vel: &mut LinearVelocity,
+    ang_vel: &mut AngularVelocity,
+) {
+    let forward = *transform.forward();
+    let right = *transform.right();
+
+    // Decompose planar velocity into forward + lateral parts.
+    let v = lin_vel.0;
+    let planar = Vec3::new(v.x, 0.0, v.z);
+    let mut fwd_speed = planar.dot(forward);
+    let mut lat_speed = planar.dot(right);
+
+    // Throttle / brake / coast.
+    if throttle.abs() > 0.01 {
+        let opposing = throttle.signum() != fwd_speed.signum() && fwd_speed.abs() > 0.5;
+        let accel = if opposing {
+            params.brake_accel
+        } else {
+            params.engine_accel
+        };
+        fwd_speed += throttle * accel * dt;
+    } else {
+        let drag = params.coast_drag * dt;
+        fwd_speed -= fwd_speed.clamp(-drag, drag);
+    }
+    fwd_speed = fwd_speed.clamp(-params.max_reverse_speed, params.max_speed);
+
+    // Lateral grip: bleed sideways velocity; handbrake lets it live (drift).
+    let grip = if handbrake {
+        params.handbrake_grip
+    } else {
+        params.grip
+    };
+    lat_speed *= (1.0 - grip * dt).max(0.0);
+
+    lin_vel.0 = forward * fwd_speed + right * lat_speed + Vec3::Y * v.y;
+
+    // Steering: authority ramps up with speed, flips when reversing.
+    let authority =
+        (fwd_speed.abs() / (params.max_speed * params.full_steer_at)).clamp(0.0, 1.0);
+    let direction = if fwd_speed < -0.5 { -1.0 } else { 1.0 };
+    ang_vel.y = -steer * params.max_yaw_rate * authority * direction;
 }

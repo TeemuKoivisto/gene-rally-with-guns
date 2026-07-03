@@ -138,6 +138,7 @@ fn resolve_projectile_hits(
     mut collisions: MessageReader<CollisionStart>,
     projectiles: Query<&Projectile>,
     sensors: Query<(), With<Sensor>>,
+    players: Query<(), With<Player>>,
     mut healths: Query<&mut Health>,
 ) {
     for event in collisions.read() {
@@ -161,7 +162,10 @@ fn resolve_projectile_hits(
             }
             if let Ok(mut health) = healths.get_mut(target) {
                 health.current -= projectile.damage;
-                commands.entity(target).insert(DamageFlash(FLASH_TIME));
+                // Flash only players: the flash tint runs on body color materials.
+                if players.contains(target) {
+                    commands.entity(target).insert(DamageFlash(FLASH_TIME));
+                }
             }
             commands.entity(maybe_bullet).try_despawn();
         }
