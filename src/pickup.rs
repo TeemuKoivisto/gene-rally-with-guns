@@ -34,6 +34,10 @@ struct WeaponCrate {
 #[derive(Resource)]
 struct RespawnTimers([f32; SPAWN_POINTS.len()]);
 
+/// Global crate counter: kinds rotate, so distribution is exactly equal.
+#[derive(Resource, Default)]
+struct CrateCounter(usize);
+
 #[derive(Resource)]
 struct PickupAssets {
     mesh: Handle<Mesh>,
@@ -46,6 +50,7 @@ pub struct PickupPlugin;
 impl Plugin for PickupPlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(RespawnTimers([0.0; SPAWN_POINTS.len()]))
+            .init_resource::<CrateCounter>()
             .add_systems(Startup, setup_pickup_assets)
             .add_systems(Update, (respawn_crates, collect_crates, spin_crates));
     }
@@ -77,9 +82,8 @@ fn setup_pickup_assets(
     });
 }
 
-fn spawn_crate(commands: &mut Commands, assets: &PickupAssets, point: usize, seed: f32) {
-    // Pseudo-random weapon, seeded by time + point (no rand dependency).
-    let kind_index = (seed * 9.7 + point as f32 * 3.1) as usize % KINDS.len();
+fn spawn_crate(commands: &mut Commands, assets: &PickupAssets, point: usize, counter: usize) {
+    let kind_index = counter % KINDS.len();
     commands.spawn((
         Name::new(format!("Weapon crate {point}")),
         WeaponCrate {
@@ -101,6 +105,7 @@ fn respawn_crates(
     time: Res<Time>,
     assets: Res<PickupAssets>,
     mut timers: ResMut<RespawnTimers>,
+    mut counter: ResMut<CrateCounter>,
     crates: Query<&WeaponCrate>,
 ) {
     let mut occupied = [false; SPAWN_POINTS.len()];
@@ -113,7 +118,8 @@ fn respawn_crates(
         }
         *timer -= time.delta_secs();
         if *timer <= 0.0 {
-            spawn_crate(&mut commands, &assets, point, time.elapsed_secs());
+            spawn_crate(&mut commands, &assets, point, counter.0);
+            counter.0 += 1;
         }
     }
 }

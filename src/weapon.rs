@@ -14,10 +14,13 @@ use crate::vehicle::{Car, CarAssets, Health, Player};
 
 pub const START_AMMO: u32 = 40;
 /// Grenade launch: elevation angle (rad) and charge-scaled speed range.
-const GRENADE_ELEVATION: f32 = 0.7;
-const GRENADE_MIN_SPEED: f32 = 9.0;
-const GRENADE_MAX_SPEED: f32 = 26.0;
-const GRENADE_CHARGE_TIME: f32 = 1.1;
+/// Tap = drop it at your feet (mine-like); full charge = fast arc across the map.
+/// Speed scales with charge^2 so the short end of the range stays controllable.
+const GRENADE_ELEVATION: f32 = 0.62;
+const GRENADE_MIN_SPEED: f32 = 4.0;
+const GRENADE_MAX_SPEED: f32 = 36.0;
+const GRENADE_CHARGE_TIME: f32 = 0.8;
+const GRENADE_GRAVITY: f32 = 2.6;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WeaponKind {
@@ -248,7 +251,7 @@ fn fire_weapons(
                     // Hold to charge the throw.
                     slot.charge = (slot.charge + dt).min(GRENADE_CHARGE_TIME);
                 } else if released && ready {
-                    let power = slot.charge / GRENADE_CHARGE_TIME;
+                    let power = (slot.charge / GRENADE_CHARGE_TIME).powi(2);
                     slot.charge = 0.0;
                     slot.cooldown = slot.kind.cooldown();
                     slot.ammo -= 1;
@@ -259,15 +262,15 @@ fn fire_weapons(
                     commands.spawn((
                         Name::new("Grenade"),
                         Projectile {
-                            direct_damage: 10.0,
+                            direct_damage: 15.0,
                             shooter: car,
-                            explosive: Some((4.5, 45.0)),
+                            explosive: Some((5.0, 70.0)),
                         },
                         Mesh3d(assets.grenade_mesh.clone()),
                         MeshMaterial3d(assets.grenade_material.clone()),
                         Transform::from_translation(muzzle + Vec3::Y * 0.5),
-                        projectile_physics(0.18, planar_vel + dir * speed, 2.0),
-                        Fuse(2.5),
+                        projectile_physics(0.18, planar_vel + dir * speed, GRENADE_GRAVITY),
+                        Fuse(2.0),
                         Lifetime(6.0),
                     ));
                 } else {
