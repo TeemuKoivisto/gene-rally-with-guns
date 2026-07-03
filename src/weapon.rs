@@ -12,7 +12,10 @@ use leafwing_input_manager::prelude::*;
 use crate::input::CarAction;
 use crate::vehicle::{Car, CarAssets, Health, Player};
 
-pub const START_AMMO: u32 = 40;
+pub const START_AMMO: u32 = 60;
+/// Minigun: per-shot spread half-angle (rad) and rearward recoil per shot (m/s).
+const MINIGUN_SPREAD: f32 = 0.09;
+const MINIGUN_RECOIL: f32 = 0.55;
 /// Grenade launch: elevation angle (rad) and charge-scaled speed range.
 /// Tap = drop it at your feet (mine-like); full charge = fast arc across the map.
 /// Speed scales with charge^2 so the short end of the range stays controllable.
@@ -24,7 +27,7 @@ const GRENADE_GRAVITY: f32 = 2.6;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WeaponKind {
-    MachineGun,
+    Minigun,
     Bazooka,
     GrenadeLauncher,
 }
@@ -32,7 +35,7 @@ pub enum WeaponKind {
 impl WeaponKind {
     pub fn refill_ammo(self) -> u32 {
         match self {
-            Self::MachineGun => 40,
+            Self::Minigun => 80,
             Self::Bazooka => 5,
             Self::GrenadeLauncher => 8,
         }
@@ -40,7 +43,7 @@ impl WeaponKind {
 
     fn cooldown(self) -> f32 {
         match self {
-            Self::MachineGun => 1.0 / 9.0,
+            Self::Minigun => 1.0 / 16.0,
             Self::Bazooka => 1.0,
             Self::GrenadeLauncher => 0.45,
         }
@@ -60,7 +63,7 @@ pub struct WeaponSlot {
 impl Default for WeaponSlot {
     fn default() -> Self {
         Self {
-            kind: WeaponKind::MachineGun,
+            kind: WeaponKind::Minigun,
             ammo: START_AMMO,
             cooldown: 0.0,
             charge: 0.0,
@@ -197,14 +200,14 @@ fn fire_weapons(
             Entity,
             &ActionState<CarAction>,
             &Transform,
-            &LinearVelocity,
+            &mut LinearVelocity,
             &mut WeaponSlot,
         ),
         With<Car>,
     >,
 ) {
     let dt = time.delta_secs();
-    for (car, actions, transform, velocity, mut slot) in &mut cars {
+    for (car, actions, transform, mut velocity, mut slot) in &mut cars {
         slot.cooldown = (slot.cooldown - dt).max(0.0);
         let pressed = actions.pressed(&CarAction::Fire);
         let released = actions.just_released(&CarAction::Fire);
@@ -217,22 +220,32 @@ fn fire_weapons(
         let planar_vel = Vec3::new(velocity.x, 0.0, velocity.z);
 
         match slot.kind {
-            WeaponKind::MachineGun => {
+            WeaponKind::Minigun => {
                 if pressed && ready {
                     slot.cooldown = slot.kind.cooldown();
                     slot.ammo -= 1;
+                    // Per-shot spread: cheap deterministic hash, no rand crate.
+                    let noise = ((time.elapsed_secs() * 12.9898 + slot.ammo as f32 * 78.233)
+                        .sin()
+                        * 43758.5453)
+                        .fract();
+                    let yaw = (noise * 2.0 - 1.0) * MINIGUN_SPREAD;
+                    let dir = Quat::from_rotation_y(yaw) * forward;
+                    // Recoil: every shot shoves the car backward a touch.
+                    velocity.0 -= forward * MINIGUN_RECOIL;
                     commands.spawn((
                         Name::new("Tracer"),
                         Projectile {
-                            direct_damage: 9.0,
+                            direct_damage: 5.0,
                             shooter: car,
                             explosive: None,
                         },
                         Mesh3d(assets.tracer_mesh.clone()),
                         MeshMaterial3d(assets.tracer_material.clone()),
-                        Transform::from_translation(muzzle).looking_to(forward, Vec3::Y),
-                        projectile_physics(0.09, planar_vel + forward * 45.0, 0.0),
-                        Lifetime(1.2),
+                        Transform::from_translation(muzzle).looking_to(dir, Vec3::Y),
+                        projectile_physics(0.09, planar_vel + dir * 45.0, 0.0),
+                        // Short-to-mid range: tracers die sooner than before.
+                        Lifetime(0.65),
                     ));
                 }
             }
