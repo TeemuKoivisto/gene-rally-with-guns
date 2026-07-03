@@ -30,7 +30,16 @@ impl Plugin for RoundPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<RoundPhase>()
             .add_systems(Startup, spawn_banner)
-            .add_systems(Update, (eliminate_dead_cars, watch_for_winner, reset_round).chain());
+            .add_systems(
+                Update,
+                (
+                    eliminate_dead_cars,
+                    watch_for_winner,
+                    restart_on_key,
+                    reset_round,
+                )
+                    .chain(),
+            );
     }
 }
 
@@ -125,6 +134,33 @@ fn watch_for_winner(
     };
 }
 
+/// Press R to restart the round immediately (dev / playtest shortcut).
+fn restart_on_key(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut commands: Commands,
+    time: Res<Time>,
+    mut phase: ResMut<RoundPhase>,
+    assets: Res<CarAssets>,
+    cop_assets: Res<CopAssets>,
+    roster: Res<Roster>,
+    leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
+    banner: Single<&mut Text, With<Banner>>,
+) {
+    if !keys.just_pressed(KeyCode::KeyR) {
+        return;
+    }
+    restart_round(
+        &mut commands,
+        &time,
+        &mut phase,
+        &assets,
+        &cop_assets,
+        &roster,
+        &leftovers,
+        &mut *banner.into_inner(),
+    );
+}
+
 /// After the banner pause: clear leftovers and respawn every roster player.
 fn reset_round(
     mut commands: Commands,
@@ -133,7 +169,7 @@ fn reset_round(
     assets: Res<CarAssets>,
     cop_assets: Res<CopAssets>,
     roster: Res<Roster>,
-    leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>)>>,
+    leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
     banner: Single<&mut Text, With<Banner>>,
 ) {
     let RoundPhase::Over { countdown } = &mut *phase else {
@@ -144,15 +180,37 @@ fn reset_round(
         return;
     }
 
-    for entity in &leftovers {
+    restart_round(
+        &mut commands,
+        &time,
+        &mut phase,
+        &assets,
+        &cop_assets,
+        &roster,
+        &leftovers,
+        &mut *banner.into_inner(),
+    );
+}
+
+/// Despawn round entities and respawn every roster player plus one cop.
+fn restart_round(
+    commands: &mut Commands,
+    time: &Time,
+    phase: &mut RoundPhase,
+    assets: &CarAssets,
+    cop_assets: &CopAssets,
+    roster: &Roster,
+    leftovers: &Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
+    banner: &mut Text,
+) {
+    for entity in leftovers {
         commands.entity(entity).try_despawn();
     }
     for slot in &roster.players {
-        vehicle::spawn_car(&mut commands, &assets, slot);
+        vehicle::spawn_car(commands, assets, slot);
     }
-    // Fresh round, fresh single patrol car.
     let pos = cop::pick_spawn_point(time.elapsed_secs(), 0);
-    cop::spawn_cop(&mut commands, &cop_assets, &assets, pos);
-    banner.into_inner().0 = String::new();
+    cop::spawn_cop(commands, cop_assets, assets, pos);
+    banner.0 = String::new();
     *phase = RoundPhase::Active;
 }
