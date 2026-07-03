@@ -8,6 +8,16 @@ use bevy::prelude::*;
 /// Wide 16:9-ish so it fills the fixed horizontal camera framing (design §6).
 pub const ARENA_HALF_X: f32 = 36.0;
 pub const ARENA_HALF_Z: f32 = 22.0;
+
+/// Static "building" blocks: (center, dimensions). Shared with the nav grid.
+pub const BLOCKS: [(Vec3, Vec3); 6] = [
+    (Vec3::new(-16.0, 1.5, -8.0), Vec3::new(8.0, 3.0, 6.0)),
+    (Vec3::new(18.0, 1.5, 7.0), Vec3::new(6.0, 3.0, 8.0)),
+    (Vec3::new(-10.0, 1.5, 12.0), Vec3::new(10.0, 3.0, 5.0)),
+    (Vec3::new(10.0, 1.5, -12.0), Vec3::new(5.0, 3.0, 6.0)),
+    (Vec3::new(28.0, 1.5, -10.0), Vec3::new(6.0, 3.0, 5.0)),
+    (Vec3::new(-28.0, 1.5, 9.0), Vec3::new(6.0, 3.0, 5.0)),
+];
 const WALL_HEIGHT: f32 = 2.0;
 const WALL_THICKNESS: f32 = 1.0;
 
@@ -91,15 +101,7 @@ fn spawn_props(
         ..default()
     });
     // Static "buildings" to weave between.
-    let blocks = [
-        (Vec3::new(-16.0, 1.5, -8.0), Vec3::new(8.0, 3.0, 6.0)),
-        (Vec3::new(18.0, 1.5, 7.0), Vec3::new(6.0, 3.0, 8.0)),
-        (Vec3::new(-10.0, 1.5, 12.0), Vec3::new(10.0, 3.0, 5.0)),
-        (Vec3::new(10.0, 1.5, -12.0), Vec3::new(5.0, 3.0, 6.0)),
-        (Vec3::new(28.0, 1.5, -10.0), Vec3::new(6.0, 3.0, 5.0)),
-        (Vec3::new(-28.0, 1.5, 9.0), Vec3::new(6.0, 3.0, 5.0)),
-    ];
-    for (i, (pos, dim)) in blocks.into_iter().enumerate() {
+    for (i, (pos, dim)) in BLOCKS.into_iter().enumerate() {
         commands.spawn((
             Name::new(format!("Block {i}")),
             Mesh3d(meshes.add(Cuboid::new(dim.x, dim.y, dim.z))),

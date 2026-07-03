@@ -7,6 +7,7 @@ mod arena;
 mod camera;
 mod cop;
 mod input;
+mod nav;
 mod pickup;
 mod round;
 mod vehicle;
@@ -45,6 +46,7 @@ fn main() {
             weapon::WeaponPlugin,
             pickup::PickupPlugin,
             round::RoundPlugin,
+            nav::NavPlugin,
             cop::CopPlugin,
         ))
         .run();

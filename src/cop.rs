@@ -10,6 +10,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::nav::NavGrid;
 use crate::vehicle::{self, apply_drive, Car, CarAssets, DriveParams, Health, Player};
 use crate::weapon::{DamageFlash, Lifetime};
 
@@ -54,6 +55,10 @@ pub struct CopCar {
     steer: f32,
     stuck_time: f32,
     reversing_time: f32,
+    /// Remaining A* waypoints toward the current target (world space).
+    path: Vec<Vec3>,
+    /// Countdown to the next repath.
+    repath_time: f32,
 }
 
 #[derive(Resource)]
@@ -186,19 +191,21 @@ pub fn spawn_cop(
     vehicle::spawn_health_bar(commands, car_assets, cop, pos);
 }
 
-/// Decide throttle/steer for each cop: chase the nearest living player,
-/// back out briefly when stuck against something.
+/// Decide throttle/steer for each cop: chase the nearest living player along
+/// an A* path (straight-line when it has line of sight), back out when stuck.
 fn cop_ai(
     time: Res<Time>,
+    nav: Res<NavGrid>,
     mut cops: Query<(&mut CopCar, &Transform, &LinearVelocity)>,
     players: Query<&Transform, (With<Car>, With<Player>, Without<CopCar>)>,
 ) {
     let dt = time.delta_secs();
     for (mut cop, transform, velocity) in &mut cops {
+        let pos = transform.translation;
         // Nearest player, planar distance.
         let target = players.iter().min_by(|a, b| {
-            let da = (a.translation - transform.translation).xz().length_squared();
-            let db = (b.translation - transform.translation).xz().length_squared();
+            let da = (a.translation - pos).xz().length_squared();
+            let db = (b.translation - pos).xz().length_squared();
             da.total_cmp(&db)
         });
         let Some(target) = target else {
@@ -216,8 +223,37 @@ fn cop_ai(
             continue;
         }
 
+        // Repath periodically (or when the path ran out).
+        cop.repath_time -= dt;
+        if cop.repath_time <= 0.0 || cop.path.is_empty() {
+            cop.repath_time = 0.4;
+            cop.path = if nav.line_of_sight(pos, target.translation) {
+                Vec::new() // straight shot; no waypoints needed
+            } else {
+                nav.find_path(pos, target.translation).unwrap_or_default()
+            };
+        }
+
+        // Drop waypoints we've reached, then steer at the furthest one we can
+        // see (string-pulling lite); fall back to the player itself.
+        while cop
+            .path
+            .first()
+            .is_some_and(|w| (*w - pos).xz().length() < 2.2)
+        {
+            cop.path.remove(0);
+        }
+        let steer_point = cop
+            .path
+            .iter()
+            .take(8)
+            .rev()
+            .find(|w| nav.line_of_sight(pos, **w))
+            .copied()
+            .unwrap_or(target.translation);
+
         let forward = *transform.forward();
-        let to_target = (target.translation - transform.translation) * Vec3::new(1.0, 0.0, 1.0);
+        let to_target = (steer_point - pos) * Vec3::new(1.0, 0.0, 1.0);
         let desired = to_target.normalize_or_zero();
         // Signed angle around Y from our heading to the target direction:
         // positive = target is to our left (counterclockwise from above).
@@ -237,6 +273,8 @@ fn cop_ai(
         if cop.stuck_time > 1.2 {
             cop.stuck_time = 0.0;
             cop.reversing_time = 0.9;
+            cop.path.clear(); // force a repath after backing out
+            cop.repath_time = 0.0;
         }
     }
 }
