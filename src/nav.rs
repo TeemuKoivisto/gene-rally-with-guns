@@ -192,4 +192,19 @@ impl NavGrid {
         }
         None
     }
+
+    /// Pick a free cell's world position pseudo-randomly using a seed and salt.
+    pub fn random_free_cell(&self, seed: f32, salt: usize) -> Vec3 {
+        let free_cells: Vec<(i32, i32)> = (0..self.nz)
+            .flat_map(|iz| (0..self.nx).map(move |ix| (ix, iz)))
+            .filter(|&(ix, iz)| !self.blocked[self.idx(ix, iz)])
+            .collect();
+        if free_cells.is_empty() {
+            return Vec3::ZERO;
+        }
+        let index = ((seed.abs() * 133.7) as usize + salt * 17) % free_cells.len();
+        let (ix, iz) = free_cells[index];
+        self.pos_of(ix, iz)
+    }
 }
+
