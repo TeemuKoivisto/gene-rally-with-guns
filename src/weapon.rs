@@ -81,6 +81,14 @@ pub struct Projectile {
 #[derive(Component)]
 struct Fuse(f32);
 
+/// Rocket motor: the round leaves the tube slow and accelerates along its
+/// flight direction until max speed — dodgeable up close, lethal down range.
+#[derive(Component)]
+struct RocketMotor {
+    accel: f32,
+    max_speed: f32,
+}
+
 /// Generic despawn-after-seconds, also used by debris.
 #[derive(Component)]
 pub struct Lifetime(pub f32);
@@ -124,7 +132,7 @@ impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Explode>()
             .add_systems(Startup, setup_projectile_assets)
-            .add_systems(FixedUpdate, fire_weapons)
+            .add_systems(FixedUpdate, (fire_weapons, drive_rockets))
             .add_systems(
                 Update,
                 (
@@ -237,13 +245,19 @@ fn fire_weapons(
                         Projectile {
                             direct_damage: 50.0,
                             shooter: car,
-                            explosive: Some((3.5, 40.0)),
+                            explosive: Some((5.5, 40.0)),
                         },
                         Mesh3d(assets.rocket_mesh.clone()),
                         MeshMaterial3d(assets.rocket_material.clone()),
                         Transform::from_translation(muzzle).looking_to(forward, Vec3::Y),
-                        projectile_physics(0.12, planar_vel + forward * 28.0, 0.0),
-                        Lifetime(2.0),
+                        // No inherited car velocity; the motor does the work:
+                        // slow launch, accelerating well past car top speed.
+                        projectile_physics(0.12, forward * 12.0, 0.0),
+                        RocketMotor {
+                            accel: 30.0,
+                            max_speed: 34.0,
+                        },
+                        Lifetime(3.0),
                     ));
                 }
             }
@@ -279,6 +293,19 @@ fn fire_weapons(
                 }
             }
         }
+    }
+}
+
+/// Accelerate rocket rounds along their current flight direction.
+fn drive_rockets(time: Res<Time>, mut rockets: Query<(&RocketMotor, &mut LinearVelocity)>) {
+    let dt = time.delta_secs();
+    for (motor, mut velocity) in &mut rockets {
+        let speed = velocity.0.length();
+        if speed < 0.01 {
+            continue;
+        }
+        let new_speed = (speed + motor.accel * dt).min(motor.max_speed);
+        velocity.0 *= new_speed / speed;
     }
 }
 
