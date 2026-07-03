@@ -49,5 +49,12 @@ fn main() {
             nav::NavPlugin,
             cop::CopPlugin,
         ))
+        .add_systems(Update, quit_on_esc)
         .run();
+}
+
+fn quit_on_esc(keys: Res<ButtonInput<KeyCode>>, mut exit: MessageWriter<AppExit>) {
+    if keys.just_pressed(KeyCode::Escape) {
+        exit.write(AppExit::Success);
+    }
 }
