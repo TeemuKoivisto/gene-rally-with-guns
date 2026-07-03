@@ -11,6 +11,7 @@ mod lobby;
 mod nav;
 mod pickup;
 mod round;
+mod skidmark;
 mod vehicle;
 mod weapon;
 
@@ -50,6 +51,7 @@ fn main() {
             round::RoundPlugin,
             nav::NavPlugin,
             cop::CopPlugin,
+            skidmark::SkidMarkPlugin,
         ))
         .add_systems(Update, quit_on_esc)
         .run();
