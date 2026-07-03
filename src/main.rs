@@ -6,7 +6,10 @@
 mod arena;
 mod camera;
 mod input;
+mod pickup;
+mod round;
 mod vehicle;
+mod weapon;
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -34,6 +37,13 @@ fn main() {
             brightness: 300.0,
             ..default()
         })
-        .add_plugins((arena::ArenaPlugin, vehicle::VehiclePlugin, camera::CameraPlugin))
+        .add_plugins((
+            arena::ArenaPlugin,
+            vehicle::VehiclePlugin,
+            camera::CameraPlugin,
+            weapon::WeaponPlugin,
+            pickup::PickupPlugin,
+            round::RoundPlugin,
+        ))
         .run();
 }

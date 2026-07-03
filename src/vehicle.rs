@@ -1,4 +1,5 @@
-//! Arcade toy-car driving: the simplified plane-force model from design §9.
+//! Arcade toy-car driving: the simplified plane-force model from design §9,
+//! plus car health and the floating health bars.
 //!
 //! The car is a dynamic rigid body with X/Z rotation locked (stays flat).
 //! Each fixed tick we decompose planar velocity into forward/lateral parts,
@@ -12,8 +13,9 @@ use leafwing_input_manager::prelude::*;
 
 use crate::arena::ARENA_HALF;
 use crate::input::{self, CarAction};
+use crate::weapon::WeaponSlot;
 
-// --- Handling tuning. M1's whole job is playing with these. ---
+// --- Handling tuning. ---
 const MAX_SPEED: f32 = 18.0;
 const MAX_REVERSE_SPEED: f32 = 8.0;
 const ENGINE_ACCEL: f32 = 28.0;
@@ -28,6 +30,9 @@ const HANDBRAKE_GRIP: f32 = 1.5;
 const MAX_YAW_RATE: f32 = 2.8;
 /// Fraction of MAX_SPEED at which steering reaches full authority.
 const FULL_STEER_AT: f32 = 0.3;
+
+pub const MAX_HEALTH: f32 = 100.0;
+const HEALTH_BAR_WIDTH: f32 = 1.4;
 
 /// Candy-bright, high-contrast player colors (design §10; 8 local players).
 pub const PLAYER_COLORS: [Color; 8] = [
@@ -49,21 +54,58 @@ pub struct Player {
     pub id: usize,
 }
 
-/// Tracks which gamepad entities already own a car.
-#[derive(Resource, Default)]
-struct Roster {
-    assigned_gamepads: Vec<Entity>,
-    next_player: usize,
+#[derive(Component)]
+pub struct Health {
+    pub current: f32,
+    pub max: f32,
 }
+
+impl Health {
+    pub fn frac(&self) -> f32 {
+        (self.current / self.max).clamp(0.0, 1.0)
+    }
+}
+
+/// How a player's car is controlled.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum InputSource {
+    Keyboard,
+    Gamepad(Entity),
+}
+
+pub struct PlayerSlot {
+    pub id: usize,
+    pub source: InputSource,
+}
+
+/// Everyone who has joined the session (survives round resets).
+#[derive(Resource, Default)]
+pub struct Roster {
+    pub players: Vec<PlayerSlot>,
+}
+
+/// Floating health bar; a world-aligned top-level entity following one car.
+#[derive(Component)]
+pub struct HealthBar {
+    pub car: Entity,
+}
+
+#[derive(Component)]
+struct HealthBarFill;
 
 /// Shared meshes/materials for spawning cars.
 #[derive(Resource)]
-struct CarAssets {
+pub struct CarAssets {
     chassis: Handle<Mesh>,
     cabin: Handle<Mesh>,
     wheel: Handle<Mesh>,
+    pub debris: Handle<Mesh>,
     wheel_material: Handle<StandardMaterial>,
-    body_materials: Vec<Handle<StandardMaterial>>,
+    pub body_materials: Vec<Handle<StandardMaterial>>,
+    bar_fill_mesh: Handle<Mesh>,
+    bar_back_mesh: Handle<Mesh>,
+    bar_fill_material: Handle<StandardMaterial>,
+    bar_back_material: Handle<StandardMaterial>,
 }
 
 pub struct VehiclePlugin;
@@ -72,7 +114,7 @@ impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Roster>()
             .add_systems(Startup, (setup_car_assets, spawn_keyboard_player).chain())
-            .add_systems(Update, gamepad_join)
+            .add_systems(Update, (gamepad_join, update_health_bars))
             .add_systems(FixedUpdate, drive_cars);
     }
 }
@@ -98,19 +140,39 @@ fn setup_car_assets(
         chassis: meshes.add(Cuboid::new(1.0, 0.4, 2.0)),
         cabin: meshes.add(Cuboid::new(0.8, 0.35, 0.9)),
         wheel: meshes.add(Cuboid::new(0.2, 0.35, 0.35)),
+        debris: meshes.add(Cuboid::new(0.3, 0.3, 0.3)),
         wheel_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.12, 0.12, 0.12),
             perceptual_roughness: 0.9,
             ..default()
         }),
         body_materials,
+        bar_fill_mesh: meshes.add(Cuboid::new(HEALTH_BAR_WIDTH, 0.1, 0.16)),
+        bar_back_mesh: meshes.add(Cuboid::new(HEALTH_BAR_WIDTH + 0.1, 0.08, 0.22)),
+        bar_fill_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.2, 0.9, 0.3),
+            unlit: true,
+            ..default()
+        }),
+        bar_back_material: materials.add(StandardMaterial {
+            base_color: Color::srgb(0.08, 0.08, 0.08),
+            unlit: true,
+            ..default()
+        }),
     });
 }
 
-fn spawn_keyboard_player(mut commands: Commands, assets: Res<CarAssets>, mut roster: ResMut<Roster>) {
-    let id = roster.next_player;
-    roster.next_player += 1;
-    spawn_car(&mut commands, &assets, id, input::keyboard_map());
+fn spawn_keyboard_player(
+    mut commands: Commands,
+    assets: Res<CarAssets>,
+    mut roster: ResMut<Roster>,
+) {
+    let slot = PlayerSlot {
+        id: 0,
+        source: InputSource::Keyboard,
+    };
+    spawn_car(&mut commands, &assets, &slot);
+    roster.players.push(slot);
 }
 
 /// Press South (A / Cross) on an unassigned pad to join with a new car.
@@ -121,46 +183,56 @@ fn gamepad_join(
     mut roster: ResMut<Roster>,
 ) {
     for (pad_entity, gamepad) in &gamepads {
-        if roster.next_player < PLAYER_COLORS.len()
+        let taken = roster
+            .players
+            .iter()
+            .any(|p| p.source == InputSource::Gamepad(pad_entity));
+        if roster.players.len() < PLAYER_COLORS.len()
             && gamepad.just_pressed(GamepadButton::South)
-            && !roster.assigned_gamepads.contains(&pad_entity)
+            && !taken
         {
-            let id = roster.next_player;
-            roster.next_player += 1;
-            roster.assigned_gamepads.push(pad_entity);
-            spawn_car(&mut commands, &assets, id, input::gamepad_map(pad_entity));
-            info!("Player {} joined on gamepad {pad_entity:?}", id + 1);
+            let slot = PlayerSlot {
+                id: roster.players.len(),
+                source: InputSource::Gamepad(pad_entity),
+            };
+            spawn_car(&mut commands, &assets, &slot);
+            info!("Player {} joined on gamepad {pad_entity:?}", slot.id + 1);
+            roster.players.push(slot);
         }
     }
 }
 
-fn spawn_car(
-    commands: &mut Commands,
-    assets: &CarAssets,
-    player_id: usize,
-    input_map: InputMap<CarAction>,
-) {
+/// Spawn a car (and its health bar) for a roster slot. Also used on round reset.
+pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot) {
     // Spawn points ring the center, facing inward.
-    let angle = player_id as f32 * std::f32::consts::TAU / PLAYER_COLORS.len() as f32;
+    let angle = slot.id as f32 * std::f32::consts::TAU / PLAYER_COLORS.len() as f32;
     let pos = Vec3::new(angle.cos(), 0.0, angle.sin()) * (ARENA_HALF * 0.6);
-    let body = assets.body_materials[player_id % PLAYER_COLORS.len()].clone();
+    let body = assets.body_materials[slot.id % PLAYER_COLORS.len()].clone();
 
-    commands
+    let car = commands
         .spawn((
-            Name::new(format!("Car P{}", player_id + 1)),
+            Name::new(format!("Car P{}", slot.id + 1)),
             Car,
-            Player { id: player_id },
+            Player { id: slot.id },
+            Health {
+                current: MAX_HEALTH,
+                max: MAX_HEALTH,
+            },
+            WeaponSlot::default(),
             Mesh3d(assets.chassis.clone()),
             MeshMaterial3d(body.clone()),
             Transform::from_translation(pos + Vec3::Y * 0.6)
                 .looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
-            RigidBody::Dynamic,
-            Collider::cuboid(1.0, 0.4, 2.0),
-            LockedAxes::new().lock_rotation_x().lock_rotation_z(),
-            Friction::new(0.1),
-            Restitution::new(0.2),
-            Mass(6.0),
-            input_map,
+            // Nested: bundles cap at 16 top-level elements.
+            (
+                RigidBody::Dynamic,
+                Collider::cuboid(1.0, 0.4, 2.0),
+                LockedAxes::new().lock_rotation_x().lock_rotation_z(),
+                Friction::new(0.1),
+                Restitution::new(0.2),
+                Mass(6.0),
+            ),
+            input::map_for(slot.source),
             ActionState::<CarAction>::default(),
         ))
         .with_children(|parent| {
@@ -178,7 +250,56 @@ fn spawn_car(
                     Transform::from_xyz(x, -0.1, z),
                 ));
             }
+        })
+        .id();
+
+    // World-aligned health bar floating above the car (not a child: it must
+    // not rotate with the chassis).
+    commands
+        .spawn((
+            Name::new(format!("Health bar P{}", slot.id + 1)),
+            HealthBar { car },
+            Transform::from_translation(pos + Vec3::Y * 1.8),
+            Visibility::default(),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Mesh3d(assets.bar_back_mesh.clone()),
+                MeshMaterial3d(assets.bar_back_material.clone()),
+                Transform::default(),
+            ));
+            parent.spawn((
+                HealthBarFill,
+                Mesh3d(assets.bar_fill_mesh.clone()),
+                MeshMaterial3d(assets.bar_fill_material.clone()),
+                Transform::from_xyz(0.0, 0.02, 0.0),
+            ));
         });
+}
+
+/// Keep bars above their cars, scale the fill with health, and clean up bars
+/// whose car is gone (covers every despawn path).
+fn update_health_bars(
+    mut commands: Commands,
+    cars: Query<(&Transform, &Health), With<Car>>,
+    mut bars: Query<(Entity, &mut Transform, &HealthBar, &Children), Without<Car>>,
+    mut fills: Query<&mut Transform, (With<HealthBarFill>, Without<HealthBar>, Without<Car>)>,
+) {
+    for (bar_entity, mut bar_transform, bar, children) in &mut bars {
+        let Ok((car_transform, health)) = cars.get(bar.car) else {
+            commands.entity(bar_entity).despawn();
+            continue;
+        };
+        bar_transform.translation = car_transform.translation + Vec3::Y * 1.8;
+        let frac = health.frac();
+        for child in children.iter() {
+            if let Ok(mut fill) = fills.get_mut(child) {
+                fill.scale.x = frac.max(0.001);
+                // Keep the fill anchored to the left edge as it shrinks.
+                fill.translation.x = -(1.0 - frac) * HEALTH_BAR_WIDTH / 2.0;
+            }
+        }
+    }
 }
 
 fn drive_cars(
