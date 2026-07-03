@@ -21,10 +21,12 @@ const COP_DRIVE: DriveParams = DriveParams {
     engine_accel: 22.0,
     brake_accel: 40.0,
     coast_drag: 6.0,
-    grip: 10.0,
-    handbrake_grip: 10.0, // cops never drift
+    grip_low_speed: 9.0,
+    grip_high_speed: 6.0, // stays grippier than players: predictable pursuit
+    handbrake_grip: 9.0,  // cops never drift
     max_yaw_rate: 2.3,
     full_steer_at: 0.35,
+    yaw_response: 10.0,
 };
 
 const COP_HEALTH: f32 = 120.0;

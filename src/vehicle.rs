@@ -23,14 +23,20 @@ pub struct DriveParams {
     pub brake_accel: f32,
     /// Passive deceleration when coasting (m/s^2).
     pub coast_drag: f32,
-    /// How fast lateral (sideways) velocity is bled off, per second. High = grippy.
-    pub grip: f32,
+    /// Lateral-velocity bleed rate (1/s) when driving slowly. High = grippy.
+    pub grip_low_speed: f32,
+    /// Lateral-velocity bleed rate at max speed: lower than `grip_low_speed`,
+    /// so fast cornering drifts wide before the velocity catches the heading.
+    pub grip_high_speed: f32,
     /// Grip while the handbrake is held: low = big slidey drifts.
     pub handbrake_grip: f32,
     /// Max yaw rate in rad/s at full steering lock.
     pub max_yaw_rate: f32,
     /// Fraction of max_speed at which steering reaches full authority.
     pub full_steer_at: f32,
+    /// How quickly the actual yaw rate follows the steering input (1/s).
+    /// Lower = smoother, heavier turn-in; higher = twitchier.
+    pub yaw_response: f32,
 }
 
 pub const PLAYER_DRIVE: DriveParams = DriveParams {
@@ -39,10 +45,12 @@ pub const PLAYER_DRIVE: DriveParams = DriveParams {
     engine_accel: 28.0,
     brake_accel: 50.0,
     coast_drag: 6.0,
-    grip: 12.0,
+    grip_low_speed: 9.0,
+    grip_high_speed: 3.5,
     handbrake_grip: 1.5,
     max_yaw_rate: 2.8,
     full_steer_at: 0.3,
+    yaw_response: 7.0,
 };
 
 pub const MAX_HEALTH: f32 = 100.0;
@@ -389,18 +397,23 @@ pub fn apply_drive(
     fwd_speed = fwd_speed.clamp(-params.max_reverse_speed, params.max_speed);
 
     // Lateral grip: bleed sideways velocity; handbrake lets it live (drift).
+    // Grip fades with speed, so fast corners slide before they stick.
+    let speed_frac = (fwd_speed.abs() / params.max_speed).clamp(0.0, 1.0);
     let grip = if handbrake {
         params.handbrake_grip
     } else {
-        params.grip
+        params.grip_low_speed + (params.grip_high_speed - params.grip_low_speed) * speed_frac
     };
     lat_speed *= (1.0 - grip * dt).max(0.0);
 
     lin_vel.0 = forward * fwd_speed + right * lat_speed + Vec3::Y * v.y;
 
-    // Steering: authority ramps up with speed, flips when reversing.
+    // Steering: authority ramps up with speed, flips when reversing, and the
+    // yaw rate eases toward the target instead of snapping (turn-in inertia).
     let authority =
         (fwd_speed.abs() / (params.max_speed * params.full_steer_at)).clamp(0.0, 1.0);
     let direction = if fwd_speed < -0.5 { -1.0 } else { 1.0 };
-    ang_vel.y = -steer * params.max_yaw_rate * authority * direction;
+    let target_yaw = -steer * params.max_yaw_rate * authority * direction;
+    let blend = 1.0 - (-params.yaw_response * dt).exp();
+    ang_vel.y += (target_yaw - ang_vel.y) * blend;
 }
