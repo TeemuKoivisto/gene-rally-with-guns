@@ -58,7 +58,7 @@ pub const PLAYER_DRIVE: DriveParams = DriveParams {
     min_steer_authority: 0.65,
 };
 
-pub const MAX_HEALTH: f32 = 50.0;
+pub const MAX_HEALTH: f32 = 100.0;
 const HEALTH_BAR_WIDTH: f32 = 1.4;
 
 /// Candy-bright, high-contrast player colors (design §10; 8 local players).

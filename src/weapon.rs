@@ -235,7 +235,7 @@ fn fire_weapons(
                     commands.spawn((
                         Name::new("Rocket"),
                         Projectile {
-                            direct_damage: 25.0,
+                            direct_damage: 50.0,
                             shooter: car,
                             explosive: Some((3.5, 40.0)),
                         },

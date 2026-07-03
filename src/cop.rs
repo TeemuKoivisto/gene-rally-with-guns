@@ -36,11 +36,16 @@ const COP_MASS: f32 = 14.0;
 const REPLACEMENTS_PER_WRECK: usize = 2;
 /// Hard cap on simultaneous cops (bounded by short rounds, design §4).
 const MAX_COPS: usize = 9;
-/// Ram damage: `(relative speed - threshold) * scale`, dealt to the player.
+/// Ram damage: gentle touches (below the speed threshold) are free; above it,
+/// damage scales with closing speed but is clamped into a narrow band so rams
+/// are consistent rather than swingy.
 const RAM_SPEED_THRESHOLD: f32 = 4.0;
-const RAM_DAMAGE_SCALE: f32 = 2.2;
-/// Fraction of dealt ram damage the cop takes itself.
-const RAM_SELF_DAMAGE: f32 = 0.15;
+const RAM_DAMAGE_SCALE: f32 = 1.5;
+const RAM_MIN_DAMAGE: f32 = 8.0;
+const RAM_MAX_DAMAGE: f32 = 22.0;
+/// Cops hit players twice as hard as players hit cops (they're the heavies):
+/// the cop takes half of whatever it dealt.
+const RAM_SELF_DAMAGE: f32 = 0.5;
 
 /// Spawn locations along the arena edges (indexed pseudo-randomly).
 const COP_SPAWN_POINTS: [Vec3; 6] = [
@@ -317,7 +322,12 @@ fn cop_rams(
                 continue;
             };
             let closing_speed = (cop_vel.0 - player_vel.0).xz().length();
-            let damage = ((closing_speed - RAM_SPEED_THRESHOLD) * RAM_DAMAGE_SCALE).max(0.0);
+            let damage = if closing_speed > RAM_SPEED_THRESHOLD {
+                ((closing_speed - RAM_SPEED_THRESHOLD) * RAM_DAMAGE_SCALE)
+                    .clamp(RAM_MIN_DAMAGE, RAM_MAX_DAMAGE)
+            } else {
+                0.0
+            };
             if damage > 0.0 {
                 player_health.current -= damage;
                 cop_health.current -= damage * RAM_SELF_DAMAGE;
