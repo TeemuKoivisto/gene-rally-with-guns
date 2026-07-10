@@ -3,9 +3,10 @@
 //!
 //! The car is a dynamic rigid body with X/Z rotation locked (stays flat).
 //! Each fixed tick we decompose planar velocity into forward/lateral parts,
-//! apply throttle/brake to the forward part, bleed the lateral part with a
-//! grip factor (weaken it for handbrake drifts), and set yaw rate directly
-//! from steering scaled by speed. Simple, fully tunable, no suspension sim.
+//! apply throttle/brake to the forward part, bleed the lateral part within a
+//! grip budget (slashed for handbrake drifts), and command yaw from a
+//! kinematic bicycle model — turn radius from wheel angle and wheelbase,
+//! capped by the same grip budget. No suspension sim.
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
@@ -23,44 +24,62 @@ pub struct DriveParams {
     pub brake_accel: f32,
     /// Passive deceleration when coasting (m/s^2).
     pub coast_drag: f32,
-    /// Lateral-velocity bleed rate (1/s) when driving slowly. High = grippy.
-    pub grip_low_speed: f32,
-    /// Lateral-velocity bleed rate at max speed: lower than `grip_low_speed`,
-    /// so fast cornering drifts wide before the velocity catches the heading.
-    pub grip_high_speed: f32,
-    /// Grip while the handbrake is held: low = big slidey drifts.
+    /// Distance between axles (m): sets the turning geometry. Minimum turn
+    /// radius is `wheelbase / tan(max_steer_angle)`.
+    pub wheelbase: f32,
+    /// Front wheel angle at full lock (rad).
+    pub max_steer_angle: f32,
+    /// Lateral grip as an acceleration budget (m/s^2). It caps cornering
+    /// force — demanding a tighter arc than the tires can hold runs the car
+    /// wide — and (at low speed) the same budget bleeds off sideways sliding.
+    pub grip: f32,
+    /// Slide-bleed budget at max speed (m/s^2). Set below `grip` and fast
+    /// cornering leaves sideways velocity alive: the tail steps out and the
+    /// car drifts through quick corners while low-speed handling stays
+    /// planted. Steering keeps the full `grip` cap, so you rotate into it.
+    pub fast_grip: f32,
+    /// Slide-bleed budget while the handbrake is held (m/s^2): low = the
+    /// sideways velocity survives = big drifts. Steering geometry keeps the
+    /// full `grip` cap, so you can rotate into the slide.
     pub handbrake_grip: f32,
-    /// Max yaw rate in rad/s at full steering lock.
-    pub max_yaw_rate: f32,
-    /// Fraction of max_speed at which steering reaches full authority.
-    pub full_steer_at: f32,
-    /// How quickly the actual yaw rate follows the steering input (1/s).
+    /// How quickly the actual yaw rate follows the steering geometry (1/s).
     /// Lower = smoother, heavier turn-in; higher = twitchier.
     pub yaw_response: f32,
-    /// Floor on the speed-based steering authority fraction (0..1). Stops
-    /// steering from going dead at standstill while high-speed grip fade still
-    /// enables corner slides.
-    pub min_steer_authority: f32,
-    /// Steering authority fraction left at max speed (0..1). Below 1.0,
-    /// steering gets calmer the faster you go — tight turns want braking
-    /// first, and small corrections at speed stop overshooting.
-    pub high_speed_steer: f32,
+    /// How strongly persistent sideways velocity drags forward speed down
+    /// (1/s per m/s of slide). Sliding scrubs speed: clean lines beat sloppy
+    /// ones, and drifts trade speed for angle.
+    pub slide_scrub: f32,
+    /// Pivot assist (rad/s at full lock, standstill): geometry can't turn a
+    /// stationary car, but guns fire forward and aiming matters, so at
+    /// walking speed steering also pivots the car directly. Fades out by
+    /// `PIVOT_FADE_SPEED`. 0 = off.
+    pub pivot_yaw_rate: f32,
 }
+
+/// Speed (m/s) at which the pivot assist has fully faded out.
+const PIVOT_FADE_SPEED: f32 = 2.0;
 
 pub const PLAYER_DRIVE: DriveParams = DriveParams {
     max_speed: 18.0,
     max_reverse_speed: 8.0,
     engine_accel: 42.0,
     brake_accel: 58.0,
-    coast_drag: 5.5,
-    grip_low_speed: 9.0,
-    grip_high_speed: 4.5,
-    handbrake_grip: 1.0,
-    max_yaw_rate: 4.8,
-    full_steer_at: 0.2,
+    // Strong engine braking: lifting the gas sheds speed fast (full-speed
+    // coast rolls out in ~13 m rather than gliding across the arena).
+    coast_drag: 12.0,
+    // A touch shorter than the visual wheel rows (z = ±0.69): kept at the
+    // tuned value so the bigger body doesn't dull the agility.
+    wheelbase: 1.2,
+    // ~31 degrees: minimum turn radius ~2.0 m.
+    max_steer_angle: 0.55,
+    // Toy-car grippy: full-speed turn radius = v^2 / grip ~ 6.7 m.
+    // Lower = everything drifts, higher = on rails.
+    grip: 56.0,
+    fast_grip: 30.0,
+    handbrake_grip: 12.0,
     yaw_response: 15.0,
-    min_steer_authority: 0.65,
-    high_speed_steer: 0.75,
+    slide_scrub: 0.7,
+    pivot_yaw_rate: 2.0,
 };
 
 pub const MAX_HEALTH: f32 = 100.0;
@@ -80,6 +99,24 @@ pub const PLAYER_COLORS: [Color; 8] = [
 
 #[derive(Component)]
 pub struct Car;
+
+/// Cosmetic body shell (chassis mesh + cabin + wheels): a child of the flat
+/// physics body that leans with acceleration — roll in corners, pitch under
+/// throttle and braking — so the car visually carries weight.
+#[derive(Component, Default)]
+pub struct CarBody {
+    roll: f32,
+    pitch: f32,
+    prev_fwd_speed: f32,
+}
+
+/// Lean angles per m/s^2 of acceleration, their caps (rad), and how quickly
+/// the shell settles onto the target lean (1/s).
+const ROLL_PER_ACCEL: f32 = 0.0028;
+const PITCH_PER_ACCEL: f32 = 0.0016;
+const MAX_ROLL: f32 = 0.14;
+const MAX_PITCH: f32 = 0.09;
+const LEAN_RESPONSE: f32 = 8.0;
 
 /// Ramps digital (keyboard) steering so full lock isn't reached in one frame.
 /// Sticks are analog and bots write analog values, so only keyboard cars get
@@ -187,7 +224,40 @@ impl Plugin for VehiclePlugin {
         app.init_resource::<Roster>()
             .add_systems(Startup, setup_car_assets)
             .add_systems(Update, update_health_bars)
-            .add_systems(FixedUpdate, drive_cars);
+            .add_systems(FixedUpdate, (drive_cars, lean_car_bodies).chain());
+    }
+}
+
+/// Tilt each car's cosmetic shell with its acceleration: roll away from the
+/// turn (centripetal accel = speed * yaw rate) and pitch with speed changes
+/// (nose up on launch, nose dive on braking). Physics never sees the tilt.
+fn lean_car_bodies(
+    time: Res<Time>,
+    cars: Query<(&Transform, &LinearVelocity, &AngularVelocity), With<Car>>,
+    mut bodies: Query<(&ChildOf, &mut CarBody, &mut Transform), Without<Car>>,
+) {
+    let dt = time.delta_secs();
+    if dt <= 0.0 {
+        return;
+    }
+    let blend = 1.0 - (-LEAN_RESPONSE * dt).exp();
+    for (child_of, mut body, mut transform) in &mut bodies {
+        let Ok((car_transform, vel, ang)) = cars.get(child_of.parent()) else {
+            continue;
+        };
+        let forward = *car_transform.forward();
+        let planar = Vec3::new(vel.x, 0.0, vel.z);
+        let fwd_speed = planar.dot(forward);
+        let lat_accel = fwd_speed * ang.y;
+        let fwd_accel = (fwd_speed - body.prev_fwd_speed) / dt;
+        body.prev_fwd_speed = fwd_speed;
+
+        let target_roll = (-lat_accel * ROLL_PER_ACCEL).clamp(-MAX_ROLL, MAX_ROLL);
+        let target_pitch = (fwd_accel * PITCH_PER_ACCEL).clamp(-MAX_PITCH, MAX_PITCH);
+        body.roll += (target_roll - body.roll) * blend;
+        body.pitch += (target_pitch - body.pitch) * blend;
+        transform.rotation =
+            Quat::from_rotation_x(body.pitch) * Quat::from_rotation_z(body.roll);
     }
 }
 
@@ -209,9 +279,9 @@ fn setup_car_assets(
         })
         .collect();
     commands.insert_resource(CarAssets {
-        chassis: meshes.add(Cuboid::new(1.0, 0.4, 2.0)),
-        cabin: meshes.add(Cuboid::new(0.8, 0.35, 0.9)),
-        wheel: meshes.add(Cuboid::new(0.2, 0.35, 0.35)),
+        chassis: meshes.add(Cuboid::new(1.15, 0.46, 2.3)),
+        cabin: meshes.add(Cuboid::new(0.92, 0.4, 1.05)),
+        wheel: meshes.add(Cuboid::new(0.23, 0.4, 0.4)),
         debris: meshes.add(Cuboid::new(0.3, 0.3, 0.3)),
         wheel_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.12, 0.12, 0.12),
@@ -269,14 +339,15 @@ pub fn spawn_car(
                 max: MAX_HEALTH,
             },
             WeaponSlot::default(),
-            Mesh3d(assets.chassis.clone()),
-            MeshMaterial3d(body.clone()),
+            // The visible shell lives on a CarBody child so it can lean while
+            // the physics body stays flat.
+            Visibility::default(),
             Transform::from_translation(pos + Vec3::Y * 0.6)
                 .looking_at(Vec3::new(0.0, 0.6, 0.0), Vec3::Y),
             // Nested: bundles cap at 16 top-level elements.
             (
                 RigidBody::Dynamic,
-                Collider::cuboid(1.0, 0.4, 2.0),
+                Collider::cuboid(1.15, 0.46, 2.3),
                 LockedAxes::new().lock_rotation_x().lock_rotation_z(),
                 // Frictionless contacts: grip lives in the drive model, and
                 // scraping a wall must not glue the car to it.
@@ -302,21 +373,30 @@ pub fn spawn_car(
         }
     }
     car_entity.with_children(|parent| {
-            // Cabin.
-            parent.spawn((
-                Mesh3d(assets.cabin.clone()),
-                MeshMaterial3d(body),
-                Transform::from_xyz(0.0, 0.35, 0.15),
-            ));
-            // Wheels (cosmetic).
-            for (x, z) in [(-0.55, -0.6), (0.55, -0.6), (-0.55, 0.6), (0.55, 0.6)] {
-                parent.spawn((
-                    Mesh3d(assets.wheel.clone()),
-                    MeshMaterial3d(assets.wheel_material.clone()),
-                    Transform::from_xyz(x, -0.1, z),
+        parent
+            .spawn((
+                CarBody::default(),
+                Mesh3d(assets.chassis.clone()),
+                MeshMaterial3d(body.clone()),
+                Transform::default(),
+            ))
+            .with_children(|shell| {
+                // Cabin.
+                shell.spawn((
+                    Mesh3d(assets.cabin.clone()),
+                    MeshMaterial3d(body),
+                    Transform::from_xyz(0.0, 0.4, 0.17),
                 ));
-            }
-        });
+                // Wheels (cosmetic).
+                for (x, z) in [(-0.63, -0.69), (0.63, -0.69), (-0.63, 0.69), (0.63, 0.69)] {
+                    shell.spawn((
+                        Mesh3d(assets.wheel.clone()),
+                        MeshMaterial3d(assets.wheel_material.clone()),
+                        Transform::from_xyz(x, -0.12, z),
+                    ));
+                }
+            });
+    });
     let car = car_entity.id();
 
     spawn_health_bar(commands, assets, car, pos);
@@ -442,28 +522,43 @@ pub fn apply_drive(
     }
     fwd_speed = fwd_speed.clamp(-params.max_reverse_speed, params.max_speed);
 
-    // Lateral grip: bleed sideways velocity; handbrake lets it live (drift).
-    // Grip fades with speed, so fast corners slide before they stick.
+    // Lateral grip: bleed sideways velocity like dry friction — a flat
+    // acceleration budget, not a rate — so cornering force has a hard cap.
+    // The budget fades from `grip` to `fast_grip` with speed (fast corners
+    // drift), and the handbrake slashes it outright (deliberate drift).
     let speed_frac = (fwd_speed.abs() / params.max_speed).clamp(0.0, 1.0);
-    let grip = if handbrake {
+    let bleed_budget = if handbrake {
         params.handbrake_grip
     } else {
-        params.grip_low_speed + (params.grip_high_speed - params.grip_low_speed) * speed_frac
+        params.grip + (params.fast_grip - params.grip) * speed_frac
     };
-    lat_speed *= (1.0 - grip * dt).max(0.0);
+    let bleed = bleed_budget * dt;
+    lat_speed -= lat_speed.clamp(-bleed, bleed);
+
+    // Sliding scrubs speed: whatever sideways velocity survives the bleed
+    // drags the forward component down. Grip driving keeps the slide tiny so
+    // it costs ~nothing; drifts trade real speed for angle.
+    let scrub = lat_speed.abs() * params.slide_scrub * dt;
+    fwd_speed -= fwd_speed.clamp(-scrub, scrub);
 
     lin_vel.0 = forward * fwd_speed + right * lat_speed + Vec3::Y * v.y;
 
-    // Steering: authority ramps up with speed, then tapers back off toward
-    // `high_speed_steer` at top speed (fast = calm, tight turns need braking).
-    // Left/right stay consistent in reverse — no sign flip anywhere, so
-    // there's nothing to twist the car on its own and pivoting in place
-    // always works. Yaw rate eases toward the target instead of snapping.
-    let ramp_up = (fwd_speed.abs() / (params.max_speed * params.full_steer_at))
-        .clamp(params.min_steer_authority, 1.0);
-    let taper = 1.0 - (1.0 - params.high_speed_steer) * speed_frac;
-    let authority = ramp_up * taper;
-    let target_yaw = -steer * params.max_yaw_rate * authority;
+    // Steering: kinematic bicycle model. Yaw comes from geometry — the turn
+    // radius is set by the wheel angle, yaw rate grows with speed, reversing
+    // steers mirrored like a real car, and a stationary car cannot rotate.
+    let steer_angle = steer * params.max_steer_angle;
+    let geometric_yaw = -(fwd_speed / params.wheelbase) * steer_angle.tan();
+    // ...until the tires run out: centripetal acceleration (v * yaw) is
+    // capped by the grip budget, so overspeeding a corner pushes you wide
+    // instead of magically rotating the car. (Full `grip` even while the
+    // handbrake is held — the front wheels still steer you into the slide.)
+    let yaw_cap = params.grip / fwd_speed.abs().max(0.1);
+    // Pivot assist: lets a (nearly) stationary car turn to aim, fading out
+    // as geometric steering takes over. Forward-sense, like inching forward
+    // with the wheels turned.
+    let pivot_fade = (1.0 - fwd_speed.abs() / PIVOT_FADE_SPEED).max(0.0);
+    let pivot_yaw = -steer * params.pivot_yaw_rate * pivot_fade;
+    let target_yaw = (geometric_yaw + pivot_yaw).clamp(-yaw_cap, yaw_cap);
     let blend = 1.0 - (-params.yaw_response * dt).exp();
     ang_vel.y += (target_yaw - ang_vel.y) * blend;
 }

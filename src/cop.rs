@@ -22,14 +22,15 @@ const COP_DRIVE: DriveParams = DriveParams {
     engine_accel: 22.0,
     brake_accel: 40.0,
     coast_drag: 6.0,
-    grip_low_speed: 9.0,
-    grip_high_speed: 6.0, // stays grippier than players: predictable pursuit
-    handbrake_grip: 9.0,  // cops never drift
-    max_yaw_rate: 2.3,
-    full_steer_at: 0.35,
+    // Longer cruiser (chassis 2.2): wider minimum turn than the players.
+    wheelbase: 1.3,
+    max_steer_angle: 0.42,
+    grip: 42.0,           // grippier than players: predictable pursuit
+    fast_grip: 42.0,      // no speed fade: cops corner on rails
+    handbrake_grip: 42.0, // cops never drift
     yaw_response: 10.0,
-    min_steer_authority: 0.0,
-    high_speed_steer: 1.0, // no taper: pursuit stays predictable
+    slide_scrub: 0.7,
+    pivot_yaw_rate: 0.0, // cops always chase on the move; no pivot assist
 };
 
 const COP_HEALTH: f32 = 60.0;
@@ -100,10 +101,10 @@ fn setup_cop_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.insert_resource(CopAssets {
-        chassis: meshes.add(Cuboid::new(1.1, 0.45, 2.2)),
-        cabin: meshes.add(Cuboid::new(0.9, 0.4, 1.0)),
-        wheel: meshes.add(Cuboid::new(0.2, 0.4, 0.4)),
-        light: meshes.add(Cuboid::new(0.22, 0.12, 0.3)),
+        chassis: meshes.add(Cuboid::new(1.27, 0.52, 2.53)),
+        cabin: meshes.add(Cuboid::new(1.04, 0.46, 1.15)),
+        wheel: meshes.add(Cuboid::new(0.23, 0.46, 0.46)),
+        light: meshes.add(Cuboid::new(0.25, 0.14, 0.35)),
         body_material: materials.add(StandardMaterial {
             base_color: Color::srgb(0.92, 0.92, 0.95),
             perceptual_roughness: 0.35,
@@ -159,7 +160,7 @@ pub fn spawn_cop(
             Transform::from_translation(pos).looking_at(Vec3::new(0.0, pos.y, 0.0), Vec3::Y),
             (
                 RigidBody::Dynamic,
-                Collider::cuboid(1.1, 0.45, 2.2),
+                Collider::cuboid(1.27, 0.52, 2.53),
                 LockedAxes::new().lock_rotation_x().lock_rotation_z(),
                 Friction::new(0.0).with_combine_rule(CoefficientCombine::Min),
                 Restitution::new(0.5).with_combine_rule(CoefficientCombine::Max),
@@ -171,24 +172,24 @@ pub fn spawn_cop(
             parent.spawn((
                 Mesh3d(assets.cabin.clone()),
                 MeshMaterial3d(assets.cabin_material.clone()),
-                Transform::from_xyz(0.0, 0.4, 0.2),
+                Transform::from_xyz(0.0, 0.46, 0.23),
             ));
             // Roof light bar: red + blue.
             parent.spawn((
                 Mesh3d(assets.light.clone()),
                 MeshMaterial3d(assets.red_light.clone()),
-                Transform::from_xyz(-0.13, 0.66, 0.2),
+                Transform::from_xyz(-0.15, 0.76, 0.23),
             ));
             parent.spawn((
                 Mesh3d(assets.light.clone()),
                 MeshMaterial3d(assets.blue_light.clone()),
-                Transform::from_xyz(0.13, 0.66, 0.2),
+                Transform::from_xyz(0.15, 0.76, 0.23),
             ));
-            for (x, z) in [(-0.6, -0.65), (0.6, -0.65), (-0.6, 0.65), (0.6, 0.65)] {
+            for (x, z) in [(-0.69, -0.75), (0.69, -0.75), (-0.69, 0.75), (0.69, 0.75)] {
                 parent.spawn((
                     Mesh3d(assets.wheel.clone()),
                     MeshMaterial3d(assets.wheel_material.clone()),
-                    Transform::from_xyz(x, -0.1, z),
+                    Transform::from_xyz(x, -0.12, z),
                 ));
             }
         })
