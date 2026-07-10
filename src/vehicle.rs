@@ -244,7 +244,8 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
         0.0,
         angle.sin() * ARENA_HALF_Z * 0.7,
     );
-    let body = assets.body_materials[slot.color_index % PLAYER_COLORS.len()].clone();
+    let color_index = slot.color_index % PLAYER_COLORS.len();
+    let body = assets.body_materials[color_index].clone();
 
     let mut car_entity = commands
         .spawn((
