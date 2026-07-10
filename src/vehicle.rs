@@ -75,7 +75,7 @@ pub const PLAYER_DRIVE: DriveParams = DriveParams {
     // Toy-car grippy: full-speed turn radius = v^2 / grip ~ 6.7 m.
     // Lower = everything drifts, higher = on rails.
     grip: 56.0,
-    fast_grip: 30.0,
+    fast_grip: 38.0,
     handbrake_grip: 12.0,
     yaw_response: 15.0,
     slide_scrub: 0.7,

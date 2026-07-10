@@ -32,8 +32,24 @@ const GRENADE_RECOIL: f32 = 5.0;
 const GRENADE_ELEVATION: f32 = 0.62;
 const GRENADE_MIN_SPEED: f32 = 4.0;
 const GRENADE_MAX_SPEED: f32 = 36.0;
-const GRENADE_CHARGE_TIME: f32 = 0.8;
+const GRENADE_CHARGE_TIME: f32 = 1.0;
 const GRENADE_GRAVITY: f32 = 2.6;
+
+/// Grenade aim preview: hot lime, bright against both asphalt and grass.
+const AIM_COLOR: Color = Color::srgb(0.6, 1.0, 0.25);
+
+/// Charge is a ping-pong sweep, not a one-way ramp: power climbs to max over
+/// GRENADE_CHARGE_TIME, sweeps back down, and repeats. Overholding no longer
+/// locks the throw at max range — wait for the downswing and release when the
+/// trajectory preview sits on the target.
+fn grenade_charge_fraction(held: f32) -> f32 {
+    let phase = (held / GRENADE_CHARGE_TIME).rem_euclid(2.0);
+    if phase <= 1.0 {
+        phase
+    } else {
+        2.0 - phase
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WeaponKind {
@@ -168,7 +184,7 @@ pub struct WeaponPlugin;
 impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Explode>()
-            .add_systems(Startup, setup_projectile_assets)
+            .add_systems(Startup, (setup_projectile_assets, thicken_aim_lines))
             .add_systems(
                 FixedUpdate,
                 (fire_weapons.after(vehicle::drive_cars), drive_rockets),
@@ -191,6 +207,13 @@ impl Plugin for WeaponPlugin {
                     .chain(),
             );
     }
+}
+
+/// Gizmos default to hairline 2 px lines; the aim preview is the only gizmo
+/// user, so widen them globally for readability from the iso camera.
+fn thicken_aim_lines(mut store: ResMut<GizmoConfigStore>) {
+    let (config, _) = store.config_mut::<DefaultGizmoConfigGroup>();
+    config.line.width = 5.0;
 }
 
 fn setup_projectile_assets(
@@ -403,10 +426,10 @@ fn fire_weapons(
             }
             WeaponKind::GrenadeLauncher => {
                 if pressed && slot.ammo > 0 {
-                    // Hold to charge the throw.
-                    slot.charge = (slot.charge + dt).min(GRENADE_CHARGE_TIME);
+                    // Hold to charge; power ping-pongs (see grenade_charge_fraction).
+                    slot.charge += dt;
                 } else if released && ready {
-                    let power = (slot.charge / GRENADE_CHARGE_TIME).powi(2);
+                    let power = grenade_charge_fraction(slot.charge).powi(2);
                     slot.charge = 0.0;
                     slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
@@ -798,7 +821,7 @@ fn draw_grenade_trajectory(
             let muzzle = transform.translation + forward * 1.6 + Vec3::Y * 0.15;
             // Inherit the car's planar velocity so shots stay accurate at speed.
             let planar_vel = Vec3::new(velocity.x, 0.0, velocity.z);
-            let power = (slot.charge / GRENADE_CHARGE_TIME).powi(2);
+            let power = grenade_charge_fraction(slot.charge).powi(2);
             let speed = GRENADE_MIN_SPEED + (GRENADE_MAX_SPEED - GRENADE_MIN_SPEED) * power;
             // Launch in an arc.
             let dir = forward * GRENADE_ELEVATION.cos() + Vec3::Y * GRENADE_ELEVATION.sin();
@@ -827,18 +850,32 @@ fn draw_grenade_trajectory(
                 points.push(pos);
             }
 
-            // Draw trajectory path
-            gizmos.linestrip(points, Color::srgb(0.3, 0.9, 0.3));
+            // Draw trajectory path.
+            gizmos.linestrip(points, AIM_COLOR);
 
-            // Draw impact/blast circle (blast radius = 5.0)
+            // Draw the impact/blast circle (blast radius = 5.0), doubled up
+            // and floated off the ground so it can't z-fight or vanish.
             let impact_pos = init_pos + init_vel * max_t + 0.5 * gravity_accel * max_t * max_t;
             let mut impact_ground = impact_pos;
-            impact_ground.y = 0.0; // clamp to ground plane
-            let circle_points = (0..=32).map(|i| {
-                let angle = i as f32 * std::f32::consts::TAU / 32.0;
-                impact_ground + Vec3::new(angle.cos() * 5.0, 0.0, angle.sin() * 5.0)
-            });
-            gizmos.linestrip(circle_points, Color::srgb(0.3, 0.9, 0.3));
+            impact_ground.y = 0.12;
+            for radius in [5.0, 4.7] {
+                let circle_points = (0..=32).map(|i| {
+                    let angle = i as f32 * std::f32::consts::TAU / 32.0;
+                    impact_ground + Vec3::new(angle.cos() * radius, 0.0, angle.sin() * radius)
+                });
+                gizmos.linestrip(circle_points, AIM_COLOR);
+            }
+            // Center cross marking the exact landing point.
+            gizmos.line(
+                impact_ground - Vec3::X * 0.6,
+                impact_ground + Vec3::X * 0.6,
+                AIM_COLOR,
+            );
+            gizmos.line(
+                impact_ground - Vec3::Z * 0.6,
+                impact_ground + Vec3::Z * 0.6,
+                AIM_COLOR,
+            );
         }
     }
 }
