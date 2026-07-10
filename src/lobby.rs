@@ -17,12 +17,26 @@ pub const NAMES: [&str; 12] = [
 ];
 
 const START_DELAY: f32 = 2.0;
+const MIN_ROUNDS: u32 = 1;
+const MAX_ROUNDS: u32 = 9;
 
 #[derive(States, Clone, PartialEq, Eq, Hash, Debug, Default)]
 pub enum GameState {
     #[default]
     Lobby,
     InGame,
+}
+
+/// Match settings chosen in the lobby (shared; anyone can adjust).
+#[derive(Resource)]
+pub struct MatchConfig {
+    pub rounds: u32,
+}
+
+impl Default for MatchConfig {
+    fn default() -> Self {
+        Self { rounds: 5 }
+    }
 }
 
 /// Ticks down once every joined player is ready; `None` while waiting.
@@ -38,12 +52,16 @@ struct PlayerPanel;
 #[derive(Component)]
 struct StatusText;
 
+#[derive(Component)]
+struct RoundsText;
+
 pub struct LobbyPlugin;
 
 impl Plugin for LobbyPlugin {
     fn build(&self, app: &mut App) {
         app.init_state::<GameState>()
             .init_resource::<StartCountdown>()
+            .init_resource::<MatchConfig>()
             .add_systems(OnEnter(GameState::Lobby), enter_lobby)
             .add_systems(
                 Update,
@@ -52,6 +70,7 @@ impl Plugin for LobbyPlugin {
                     keyboard_lobby_input,
                     gamepad_lobby_input,
                     refresh_panels,
+                    refresh_rounds_text,
                     tick_countdown,
                 )
                     .chain()
@@ -66,10 +85,10 @@ impl Plugin for LobbyPlugin {
 
 // --- UI ---
 
-fn enter_lobby(mut commands: Commands, mut roster: ResMut<Roster>) {
-    // Everyone re-readies each visit; roster (players/names/colors) persists.
+fn enter_lobby(mut commands: Commands, mut roster: ResMut<Roster>, config: Res<MatchConfig>) {
+    // Humans re-ready each visit; bots are always ready. Roster persists.
     for slot in &mut roster.players {
-        slot.ready = false;
+        slot.ready = matches!(slot.source, InputSource::Cpu);
     }
 
     commands
@@ -107,6 +126,15 @@ fn enter_lobby(mut commands: Commands, mut roster: ResMut<Roster>) {
                 TextColor(Color::WHITE),
             ));
             parent.spawn((
+                RoundsText,
+                Text::new(format!("Rounds: {}", config.rounds)),
+                TextFont {
+                    font_size: FontSize::Px(28.0),
+                    ..default()
+                },
+                TextColor(Color::srgb(0.95, 0.95, 0.6)),
+            ));
+            parent.spawn((
                 PanelRow,
                 Node {
                     flex_direction: FlexDirection::Row,
@@ -117,8 +145,8 @@ fn enter_lobby(mut commands: Commands, mut roster: ResMut<Roster>) {
             ));
             parent.spawn((
                 Text::new(
-                    "Keyboard: Enter join/ready - arrows left/right name, up/down color - Backspace leave\n\
-                     Gamepad: A join/ready - D-pad left/right name, up/down color - B leave\n\
+                    "Keyboard: Enter join/ready - arrows left/right name, up/down color - Backspace leave - -/+ rounds - C/X add/remove CPU\n\
+                     Gamepad: A join/ready - D-pad left/right name, up/down color - B leave - LB/RB rounds - Y/X add/remove CPU\n\
                      In game: Tab / Select returns to lobby",
                 ),
                 TextFont {
@@ -148,6 +176,7 @@ fn refresh_panels(
         let source_label = match slot.source {
             InputSource::Keyboard => "Keyboard",
             InputSource::Gamepad(_) => "Gamepad",
+            InputSource::Cpu => "CPU",
         };
         commands.entity(*row).with_children(|parent| {
             parent
@@ -245,8 +274,20 @@ fn join(roster: &mut Roster, source: InputSource) {
         source,
         name_index,
         color_index,
-        ready: false,
+        // Bots never touch a ready button; they're always in.
+        ready: matches!(source, InputSource::Cpu),
+        score: 0,
     });
+}
+
+fn remove_last_bot(roster: &mut Roster) {
+    if let Some(index) = roster
+        .players
+        .iter()
+        .rposition(|p| matches!(p.source, InputSource::Cpu))
+    {
+        roster.players.remove(index);
+    }
 }
 
 /// Join / toggle-ready / leave / cycle, for one input source.
@@ -306,7 +347,7 @@ fn apply_intent(
 /// entity, so its old slot can never receive input again — drop it.
 fn drop_disconnected_pads(pads: Query<(), With<Gamepad>>, mut roster: ResMut<Roster>) {
     let gone = |slot: &PlayerSlot| match slot.source {
-        InputSource::Keyboard => false,
+        InputSource::Keyboard | InputSource::Cpu => false,
         InputSource::Gamepad(entity) => !pads.contains(entity),
     };
     // Only touch the resource when needed; refresh_panels reacts to changes.
@@ -315,9 +356,15 @@ fn drop_disconnected_pads(pads: Query<(), With<Gamepad>>, mut roster: ResMut<Ros
     }
 }
 
+fn adjust_rounds(config: &mut MatchConfig, direction: i32) {
+    config.rounds = (config.rounds as i32 + direction).clamp(MIN_ROUNDS as i32, MAX_ROUNDS as i32)
+        as u32;
+}
+
 fn keyboard_lobby_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut roster: ResMut<Roster>,
+    mut config: ResMut<MatchConfig>,
     mut sfx: MessageWriter<PlaySfx>,
 ) {
     let intent = LobbyIntent {
@@ -331,11 +378,23 @@ fn keyboard_lobby_input(
     if intent.join_or_ready || intent.leave || intent.name_dir != 0 || intent.color_dir != 0 {
         apply_intent(&mut roster, InputSource::Keyboard, intent, &mut sfx);
     }
+    if keys.just_pressed(KeyCode::KeyC) {
+        join(&mut roster, InputSource::Cpu);
+    }
+    if keys.just_pressed(KeyCode::KeyX) {
+        remove_last_bot(&mut roster);
+    }
+    let rounds_dir = keys.just_pressed(KeyCode::Equal) as i32
+        - keys.just_pressed(KeyCode::Minus) as i32;
+    if rounds_dir != 0 {
+        adjust_rounds(&mut config, rounds_dir);
+    }
 }
 
 fn gamepad_lobby_input(
     pads: Query<(Entity, &Gamepad)>,
     mut roster: ResMut<Roster>,
+    mut config: ResMut<MatchConfig>,
     mut sfx: MessageWriter<PlaySfx>,
 ) {
     for (entity, pad) in &pads {
@@ -350,6 +409,27 @@ fn gamepad_lobby_input(
         if intent.join_or_ready || intent.leave || intent.name_dir != 0 || intent.color_dir != 0 {
             apply_intent(&mut roster, InputSource::Gamepad(entity), intent, &mut sfx);
         }
+        if pad.just_pressed(GamepadButton::North) {
+            join(&mut roster, InputSource::Cpu);
+        }
+        if pad.just_pressed(GamepadButton::West) {
+            remove_last_bot(&mut roster);
+        }
+        // Shoulder buttons (LB/RB) adjust the round count.
+        let rounds_dir = pad.just_pressed(GamepadButton::RightTrigger) as i32
+            - pad.just_pressed(GamepadButton::LeftTrigger) as i32;
+        if rounds_dir != 0 {
+            adjust_rounds(&mut config, rounds_dir);
+        }
+    }
+}
+
+fn refresh_rounds_text(
+    config: Res<MatchConfig>,
+    text: Single<&mut Text, With<RoundsText>>,
+) {
+    if config.is_changed() {
+        text.into_inner().0 = format!("Rounds: {}", config.rounds);
     }
 }
 
@@ -363,12 +443,17 @@ fn tick_countdown(
     mut sfx: MessageWriter<PlaySfx>,
     status: Single<&mut Text, With<StatusText>>,
 ) {
-    let all_ready = !roster.players.is_empty() && roster.players.iter().all(|p| p.ready);
+    // Bots alone can't start a match: at least one human must be in.
+    let any_human = roster
+        .players
+        .iter()
+        .any(|p| !matches!(p.source, InputSource::Cpu));
+    let all_ready = any_human && roster.players.iter().all(|p| p.ready);
     let mut status = status.into_inner();
 
     if !all_ready {
         countdown.0 = None;
-        status.0 = if roster.players.is_empty() {
+        status.0 = if !any_human {
             "Press Enter (keyboard) or A (gamepad) to join".to_string()
         } else {
             "Waiting for everyone to ready up...".to_string()

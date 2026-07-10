@@ -100,6 +100,8 @@ impl Health {
 pub enum InputSource {
     Keyboard,
     Gamepad(Entity),
+    /// AI-driven (lobby-added bot for testing / filling out a party).
+    Cpu,
 }
 
 pub struct PlayerSlot {
@@ -111,6 +113,8 @@ pub struct PlayerSlot {
     pub color_index: usize,
     /// Lobby ready flag; meaningless once in game.
     pub ready: bool,
+    /// Match points (party scoring); reset when a new match starts.
+    pub score: u32,
 }
 
 /// Everyone who has joined the session (survives round resets).
@@ -209,7 +213,7 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
     );
     let body = assets.body_materials[slot.color_index % PLAYER_COLORS.len()].clone();
 
-    let car = commands
+    let mut car_entity = commands
         .spawn((
             Name::new(format!("Car P{}", slot.id + 1)),
             Car,
@@ -238,10 +242,20 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
                 Restitution::new(0.6).with_combine_rule(CoefficientCombine::Max),
                 Mass(6.0),
             ),
-            input::map_for(slot.source),
             ActionState::<CarAction>::default(),
-        ))
-        .with_children(|parent| {
+        ));
+    // Humans get device bindings feeding their ActionState; bots get an AI
+    // driver that writes into the same ActionState, so drive/fire systems
+    // treat both identically.
+    match slot.source {
+        InputSource::Cpu => {
+            car_entity.insert(crate::bot::BotDriver::default());
+        }
+        source => {
+            car_entity.insert(input::map_for(source));
+        }
+    }
+    car_entity.with_children(|parent| {
             // Cabin.
             parent.spawn((
                 Mesh3d(assets.cabin.clone()),
@@ -256,8 +270,8 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
                     Transform::from_xyz(x, -0.1, z),
                 ));
             }
-        })
-        .id();
+        });
+    let car = car_entity.id();
 
     spawn_health_bar(commands, assets, car, pos);
 }
@@ -312,7 +326,7 @@ fn update_health_bars(
     }
 }
 
-fn drive_cars(
+pub(crate) fn drive_cars(
     time: Res<Time>,
     mut cars: Query<
         (

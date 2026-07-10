@@ -21,6 +21,8 @@ pub fn map_for(source: InputSource) -> InputMap<CarAction> {
     match source {
         InputSource::Keyboard => keyboard_map(),
         InputSource::Gamepad(pad) => gamepad_map(pad),
+        // Bots have no device; their AI writes the ActionState directly.
+        InputSource::Cpu => InputMap::default(),
     }
 }
 

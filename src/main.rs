@@ -5,6 +5,7 @@
 
 mod arena;
 mod audio;
+mod bot;
 mod camera;
 mod cop;
 mod input;
@@ -53,6 +54,7 @@ fn main() {
             round::RoundPlugin,
             nav::NavPlugin,
             cop::CopPlugin,
+            bot::BotPlugin,
             skidmark::SkidMarkPlugin,
         ))
         .add_systems(Update, quit_on_esc)
