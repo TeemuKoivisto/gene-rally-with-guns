@@ -36,25 +36,30 @@ fn keyboard_map() -> InputMap<CarAction> {
         .with(CarAction::Fire, KeyCode::Space)
 }
 
-/// Gamepad bindings, tied to one specific pad entity.
+/// Top-down racer layout: triggers (or A) for gas/brake, left-stick X for steer.
+///
+/// The left stick Y axis is intentionally *not* bound to throttle — mapping it
+/// like WASD means gas and steer fight on the same stick and you cannot hold
+/// a turn while accelerating.
 fn gamepad_map(gamepad: Entity) -> InputMap<CarAction> {
     InputMap::default()
-        // Right trigger accelerates, left trigger brakes/reverses.
+        // Analog triggers: LT brake/reverse, RT accelerate.
         .with_axis(
             CarAction::Throttle,
-            VirtualAxis::new(GamepadButton::LeftTrigger2, GamepadButton::RightTrigger2),
+            VirtualAxis::new(GamepadButton::LeftTrigger2, GamepadButton::RightTrigger2)
+                .with_deadzone_symmetric(0.05),
         )
-        // Left stick up/down also works (kart-style fallback).
+        // Digital gas for party-game muscle memory (A / Cross).
         .with_axis(
             CarAction::Throttle,
-            GamepadControlAxis::LEFT_Y.with_deadzone_symmetric(0.2),
+            VirtualAxis::new(GamepadButton::Mode, GamepadButton::South),
         )
+        // Steer on horizontal stick only — independent of throttle.
         .with_axis(
             CarAction::Steer,
-            GamepadControlAxis::LEFT_X.with_deadzone_symmetric(0.15),
+            GamepadControlAxis::LEFT_X.with_deadzone_symmetric(0.12),
         )
-        .with(CarAction::Handbrake, GamepadButton::South)
+        .with(CarAction::Handbrake, GamepadButton::East)
         .with(CarAction::Fire, GamepadButton::West)
-        .with(CarAction::Fire, GamepadButton::RightTrigger)
         .with_gamepad(gamepad)
 }
