@@ -1,4 +1,4 @@
-//! Sound effects from Kenney CC0 packs (see assets/sounds/LICENSE.txt).
+//! Sound effects — see assets/sounds/LICENSE.txt for sources and attributions.
 //!
 //! Game systems send [`PlaySfx`] messages; this plugin spawns one-shot audio
 //! entities. SFX play non-spatially — the iso camera sits ~60 world-units from

@@ -1,2 +1,6 @@
 Sound effects from Kenney (https://kenney.nl) — Creative Commons CC0 1.0 Universal.
 Packs used: Sci-fi Sounds, Impact Sounds, Interface Sounds.
+
+"Car tire squeal skid loop" (tire_skid_loop.ogg) by audible-edge (Tom Haigh),
+submitted by qubodup — CC-BY 3.0
+https://opengameart.org/content/car-tire-squeal-skid-loop

@@ -4,8 +4,10 @@
 //! a thin quad behind each rear wheel, just above the ground plane.  Each
 //! segment stretches from the previous wheel position to the current one so
 //! the trail is continuous.  Marks fade out over their lifetime then despawn.
+//! A looping tire-squeal loop plays per car while drifting.
 
 use avian3d::prelude::*;
+use bevy::audio::{AudioPlayer, PlaybackMode, PlaybackSettings, Volume};
 use bevy::prelude::*;
 
 use crate::arena::ground_surface_y;
@@ -21,6 +23,12 @@ const SPAWN_INTERVAL: f32 = 0.03;
 const MARK_HALF_WIDTH: f32 = 0.07;
 /// Offset above the local ground surface (avoid z-fighting).
 const MARK_Y_OFFSET: f32 = 0.005;
+/// Lateral speed (m/s) at which skid SFX reaches full volume.
+const SKID_VOL_FULL_SPEED: f32 = 8.0;
+/// Skid loop volume at drift threshold.
+const SKID_VOL_MIN: f32 = 0.12;
+/// Skid loop volume at [`SKID_VOL_FULL_SPEED`].
+const SKID_VOL_MAX: f32 = 0.5;
 
 /// Per-car state: cooldown timer + last world-space position of each rear
 /// wheel, so consecutive segments can be connected.
@@ -30,7 +38,13 @@ struct SkidState {
     /// `None` when the car wasn't drifting last tick (trail start).
     prev_left: Option<Vec3>,
     prev_right: Option<Vec3>,
+    /// Looping tire-squeal entity, if currently drifting.
+    audio: Option<Entity>,
 }
+
+/// Marks the looping skid SFX child on a car.
+#[derive(Component)]
+struct SkidAudio;
 
 /// Fading skid-mark segment.
 #[derive(Component)]
@@ -45,6 +59,7 @@ struct SkidAssets {
     /// A 1-unit-long, 1-unit-wide, very thin cuboid.
     mesh: Handle<Mesh>,
     material: Handle<StandardMaterial>,
+    tire_squeal: Handle<AudioSource>,
 }
 
 pub struct SkidMarkPlugin;
@@ -58,6 +73,7 @@ impl Plugin for SkidMarkPlugin {
 
 fn setup_skid_assets(
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
@@ -72,7 +88,14 @@ fn setup_skid_assets(
             unlit: true,
             ..default()
         }),
+        tire_squeal: asset_server.load("sounds/tire_skid_loop.ogg"),
     });
+}
+
+fn skid_sfx_volume(lat_speed: f32) -> f32 {
+    let span = SKID_VOL_FULL_SPEED - DRIFT_THRESHOLD;
+    let t = ((lat_speed - DRIFT_THRESHOLD) / span).clamp(0.0, 1.0);
+    SKID_VOL_MIN + t * (SKID_VOL_MAX - SKID_VOL_MIN)
 }
 
 /// Compute the world-space position of a rear wheel given the car transform.
@@ -96,6 +119,7 @@ fn spawn_skid_marks(
         With<Car>,
     >,
     mut states: Query<&mut SkidState>,
+    mut skid_audio: Query<&mut PlaybackSettings, With<SkidAudio>>,
 ) {
     let dt = time.delta_secs();
 
@@ -115,6 +139,7 @@ fn spawn_skid_marks(
                 cooldown: 0.0,
                 prev_left: None,
                 prev_right: None,
+                audio: None,
             });
             continue; // state won't be queryable until next frame
         }
@@ -125,7 +150,33 @@ fn spawn_skid_marks(
             // Reset trail start so the next drift begins a fresh segment.
             state.prev_left = None;
             state.prev_right = None;
+            if let Some(audio) = state.audio.take() {
+                commands.entity(audio).try_despawn();
+            }
             continue;
+        }
+
+        let volume = skid_sfx_volume(lat_speed);
+        if state.audio.is_none() {
+            let audio = commands
+                .spawn((
+                    Name::new("Skid audio"),
+                    SkidAudio,
+                    AudioPlayer::new(assets.tire_squeal.clone()),
+                    PlaybackSettings {
+                        mode: PlaybackMode::Loop,
+                        volume: Volume::Linear(volume),
+                        spatial: false,
+                        ..PlaybackSettings::LOOP
+                    },
+                ))
+                .id();
+            commands.entity(entity).add_child(audio);
+            state.audio = Some(audio);
+        } else if let Some(audio_entity) = state.audio {
+            if let Ok(mut settings) = skid_audio.get_mut(audio_entity) {
+                settings.volume = Volume::Linear(volume);
+            }
         }
 
         // Tick cooldown.
