@@ -402,12 +402,11 @@ pub fn apply_drive(
 
     lin_vel.0 = forward * fwd_speed + right * lat_speed + Vec3::Y * v.y;
 
-    // Steering: authority ramps up with speed, flips when reversing, and the
-    // yaw rate eases toward the target instead of snapping (turn-in inertia).
+    // Steering: authority ramps up with speed; left/right stay consistent in
+    // reverse. Yaw rate eases toward the target instead of snapping (turn-in).
     let authority = (fwd_speed.abs() / (params.max_speed * params.full_steer_at))
         .clamp(params.min_steer_authority, 1.0);
-    let direction = if fwd_speed < -0.5 { -1.0 } else { 1.0 };
-    let target_yaw = -steer * params.max_yaw_rate * authority * direction;
+    let target_yaw = -steer * params.max_yaw_rate * authority;
     let blend = 1.0 - (-params.yaw_response * dt).exp();
     ang_vel.y += (target_yaw - ang_vel.y) * blend;
 }
