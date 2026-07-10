@@ -12,6 +12,7 @@ use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
 use crate::audio::{PlaySfx, SfxKind};
+use crate::camera::ShakeCamera;
 use crate::input::CarAction;
 use crate::vehicle::{Car, CarAssets, Health, Player};
 
@@ -24,6 +25,13 @@ const SHOTGUN_PELLET_SPEED: f32 = 42.0;
 const SHOTGUN_PELLET_DAMAGE: f32 = 5.0;
 const SHOTGUN_PELLET_LIFETIME: f32 = 0.26;
 const SHOTGUN_RECOIL: f32 = 3.5;
+const BAZOOKA_RECOIL: f32 = 2.8;
+const GRENADE_RECOIL: f32 = 1.4;
+const SHOTGUN_SHAKE: f32 = 0.22;
+const BAZOOKA_SHAKE: f32 = 0.38;
+const GRENADE_SHAKE: f32 = 0.2;
+const HIT_SHAKE: f32 = 0.14;
+const EXPLOSION_SHAKE: f32 = 0.28;
 /// Grenade launch: elevation angle (rad) and charge-scaled speed range.
 /// Tap = drop it at your feet (mine-like); full charge = fast arc across the map.
 /// Speed scales with charge^2 so the short end of the range stays controllable.
@@ -94,11 +102,44 @@ struct RocketMotor {
 #[derive(Component)]
 pub struct Lifetime(pub f32);
 
-/// Brief white-hot tint on the car body when hit.
+/// Brief hot tint on the car body when hit.
 #[derive(Component)]
 pub struct DamageFlash(pub f32);
 
-const FLASH_TIME: f32 = 0.15;
+const FLASH_TIME: f32 = 0.22;
+
+#[derive(Component)]
+struct MuzzleFlash {
+    age: f32,
+    lifetime: f32,
+    start_scale: f32,
+}
+
+#[derive(Component)]
+struct HitSpark {
+    age: f32,
+    lifetime: f32,
+}
+
+/// Fading trail puff left by a projectile.
+#[derive(Component)]
+struct TrailPuff {
+    age: f32,
+    lifetime: f32,
+}
+
+#[derive(Clone, Copy)]
+enum TrailKind {
+    Tracer,
+    RocketSmoke,
+    Grenade,
+}
+
+#[derive(Component)]
+struct TrailEmitter {
+    kind: TrailKind,
+    cooldown: f32,
+}
 
 /// AoE detonation request: consumed by `resolve_explosions`.
 #[derive(Message)]
@@ -125,6 +166,17 @@ struct ProjectileAssets {
     grenade_material: Handle<StandardMaterial>,
     explosion_mesh: Handle<Mesh>,
     explosion_material: Handle<StandardMaterial>,
+    muzzle_flash_mesh: Handle<Mesh>,
+    flash_minigun: Handle<StandardMaterial>,
+    flash_rocket: Handle<StandardMaterial>,
+    flash_grenade: Handle<StandardMaterial>,
+    spark_mesh: Handle<Mesh>,
+    spark_material: Handle<StandardMaterial>,
+    trail_tracer_mesh: Handle<Mesh>,
+    trail_tracer_material: Handle<StandardMaterial>,
+    trail_smoke_mesh: Handle<Mesh>,
+    trail_smoke_material: Handle<StandardMaterial>,
+    trail_grenade_material: Handle<StandardMaterial>,
 }
 
 pub struct WeaponPlugin;
@@ -140,8 +192,13 @@ impl Plugin for WeaponPlugin {
                     resolve_projectile_hits,
                     tick_fuses,
                     resolve_explosions,
+                    emit_projectile_trails,
+                    pulse_grenade_fuse,
                     tick_lifetimes,
                     tick_damage_flash,
+                    tick_muzzle_flashes,
+                    tick_hit_sparks,
+                    tick_trail_puffs,
                     grow_explosion_vfx,
                     draw_grenade_trajectory,
                 )
@@ -187,7 +244,104 @@ fn setup_projectile_assets(
             alpha_mode: AlphaMode::Blend,
             ..default()
         }),
+        muzzle_flash_mesh: meshes.add(Sphere::new(0.22)),
+        flash_minigun: materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.95, 0.5, 0.95),
+            emissive: LinearRgba::rgb(14.0, 12.0, 2.0),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        flash_rocket: materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.55, 0.15, 0.95),
+            emissive: LinearRgba::rgb(12.0, 4.0, 0.5),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        flash_grenade: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.5, 1.0, 0.45, 0.95),
+            emissive: LinearRgba::rgb(2.0, 10.0, 1.5),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        spark_mesh: meshes.add(Cuboid::new(0.12, 0.12, 0.12)),
+        spark_material: materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.75, 0.2, 1.0),
+            emissive: LinearRgba::rgb(10.0, 6.0, 1.0),
+            unlit: true,
+            ..default()
+        }),
+        trail_tracer_mesh: meshes.add(Cuboid::new(0.1, 0.1, 0.35)),
+        trail_tracer_material: materials.add(StandardMaterial {
+            base_color: Color::srgba(1.0, 0.9, 0.25, 0.55),
+            emissive: LinearRgba::rgb(4.0, 3.5, 0.5),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        trail_smoke_mesh: meshes.add(Sphere::new(0.2)),
+        trail_smoke_material: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.35, 0.35, 0.38, 0.5),
+            emissive: LinearRgba::rgb(0.3, 0.3, 0.3),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
+        trail_grenade_material: materials.add(StandardMaterial {
+            base_color: Color::srgba(0.35, 0.95, 0.4, 0.45),
+            emissive: LinearRgba::rgb(1.0, 4.0, 1.0),
+            unlit: true,
+            alpha_mode: AlphaMode::Blend,
+            ..default()
+        }),
     });
+}
+
+fn spawn_muzzle_flash(
+    commands: &mut Commands,
+    assets: &ProjectileAssets,
+    kind: WeaponKind,
+    pos: Vec3,
+    dir: Vec3,
+) {
+    let (material, lifetime, scale) = match kind {
+        WeaponKind::Shotgun => (assets.flash_minigun.clone(), 0.08, 1.25),
+        WeaponKind::Bazooka => (assets.flash_rocket.clone(), 0.1, 1.35),
+        WeaponKind::GrenadeLauncher => (assets.flash_grenade.clone(), 0.08, 1.1),
+    };
+    commands.spawn((
+        Name::new("Muzzle flash"),
+        MuzzleFlash {
+            age: 0.0,
+            lifetime,
+            start_scale: scale,
+        },
+        Mesh3d(assets.muzzle_flash_mesh.clone()),
+        MeshMaterial3d(material),
+        Transform::from_translation(pos)
+            .looking_to(dir, Vec3::Y)
+            .with_scale(Vec3::splat(scale)),
+    ));
+}
+
+fn spawn_hit_sparks(commands: &mut Commands, assets: &ProjectileAssets, pos: Vec3, seed: u32) {
+    for i in 0..6 {
+        let angle = seed.wrapping_mul(17).wrapping_add(i * 97) as f32 * 0.31;
+        let offset = Vec3::new(angle.cos() * 0.3, 0.2 + (i % 2) as f32 * 0.15, angle.sin() * 0.3);
+        commands.spawn((
+            Name::new("Hit spark"),
+            HitSpark {
+                age: 0.0,
+                lifetime: 0.2,
+            },
+            Mesh3d(assets.spark_mesh.clone()),
+            MeshMaterial3d(assets.spark_material.clone()),
+            Transform::from_translation(pos + offset)
+                .with_scale(Vec3::splat(0.8 + (i % 2) as f32 * 0.35)),
+        ));
+    }
 }
 
 fn fire_weapons(
@@ -195,6 +349,7 @@ fn fire_weapons(
     time: Res<Time>,
     assets: Res<ProjectileAssets>,
     mut sfx: MessageWriter<PlaySfx>,
+    mut shake: MessageWriter<ShakeCamera>,
     mut cars: Query<
         (
             Entity,
@@ -238,9 +393,11 @@ fn fire_weapons(
                         .sin()
                         * 43758.5453)
                         .fract();
-                    // Recoil: the whole blast shoves the car back once.
                     velocity.0 -= forward * SHOTGUN_RECOIL;
-                    // Even fan of pellets across the cone, nudged by the jitter.
+                    spawn_muzzle_flash(&mut commands, &assets, kind, muzzle, forward);
+                    shake.write(ShakeCamera {
+                        intensity: SHOTGUN_SHAKE,
+                    });
                     for i in 0..SHOTGUN_PELLETS {
                         let frac = i as f32 / (SHOTGUN_PELLETS - 1) as f32;
                         let yaw =
@@ -261,7 +418,10 @@ fn fire_weapons(
                                 planar_vel + dir * SHOTGUN_PELLET_SPEED,
                                 0.0,
                             ),
-                            // Short fuse = short range: pellets vanish past ~11 m.
+                            TrailEmitter {
+                                kind: TrailKind::Tracer,
+                                cooldown: 0.0,
+                            },
                             Lifetime(SHOTGUN_PELLET_LIFETIME),
                         ));
                     }
@@ -275,6 +435,11 @@ fn fire_weapons(
                 if pressed && ready {
                     slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
+                    velocity.0 -= forward * BAZOOKA_RECOIL;
+                    spawn_muzzle_flash(&mut commands, &assets, kind, muzzle, forward);
+                    shake.write(ShakeCamera {
+                        intensity: BAZOOKA_SHAKE,
+                    });
                     sfx.write(PlaySfx {
                         kind: SfxKind::RocketFire,
                         position: Some(muzzle),
@@ -289,12 +454,14 @@ fn fire_weapons(
                         Mesh3d(assets.rocket_mesh.clone()),
                         MeshMaterial3d(assets.rocket_material.clone()),
                         Transform::from_translation(muzzle).looking_to(forward, Vec3::Y),
-                        // No inherited car velocity; the motor does the work:
-                        // slow launch, accelerating well past car top speed.
                         projectile_physics(0.12, forward * 12.0, 0.0),
                         RocketMotor {
                             accel: 30.0,
                             max_speed: 34.0,
+                        },
+                        TrailEmitter {
+                            kind: TrailKind::RocketSmoke,
+                            cooldown: 0.0,
                         },
                         Lifetime(3.0),
                     ));
@@ -314,6 +481,11 @@ fn fire_weapons(
                     // Launch in an arc: clears the 3-high buildings mid-charge.
                     let dir = forward * GRENADE_ELEVATION.cos() + Vec3::Y * GRENADE_ELEVATION.sin();
                     let launch_pos = muzzle + Vec3::Y * 0.5;
+                    velocity.0 -= forward * GRENADE_RECOIL;
+                    spawn_muzzle_flash(&mut commands, &assets, kind, launch_pos, dir);
+                    shake.write(ShakeCamera {
+                        intensity: GRENADE_SHAKE,
+                    });
                     sfx.write(PlaySfx {
                         kind: SfxKind::GrenadeLaunch,
                         position: Some(launch_pos),
@@ -329,6 +501,10 @@ fn fire_weapons(
                         MeshMaterial3d(assets.grenade_material.clone()),
                         Transform::from_translation(launch_pos),
                         projectile_physics(0.18, planar_vel + dir * speed, GRENADE_GRAVITY),
+                        TrailEmitter {
+                            kind: TrailKind::Grenade,
+                            cooldown: 0.0,
+                        },
                         Fuse(2.0),
                         Lifetime(6.0),
                     ));
@@ -376,13 +552,15 @@ fn projectile_physics(radius: f32, velocity: Vec3, gravity: f32) -> impl Bundle 
 /// request the AoE if explosive, despawn the round.
 fn resolve_projectile_hits(
     mut commands: Commands,
+    assets: Res<ProjectileAssets>,
     mut collisions: MessageReader<CollisionStart>,
     mut explosions: MessageWriter<Explode>,
     mut sfx: MessageWriter<PlaySfx>,
+    mut shake: MessageWriter<ShakeCamera>,
     projectiles: Query<(&Projectile, &Transform)>,
     sensors: Query<(), With<Sensor>>,
     players: Query<(), With<Player>>,
-    mut healths: Query<&mut Health>,
+    mut healths: Query<(&Transform, &mut Health, &mut LinearVelocity)>,
 ) {
     for event in collisions.read() {
         // A projectile can be on either side of the event.
@@ -403,18 +581,30 @@ fn resolve_projectile_hits(
             if target == projectile.shooter {
                 continue;
             }
-            if let Ok(mut health) = healths.get_mut(target) {
+            let hit_pos = bullet_transform.translation;
+            if let Ok((target_transform, mut health, mut velocity)) = healths.get_mut(target) {
                 health.current -= projectile.direct_damage;
-                // Flash only players: the flash tint runs on body color materials.
-                // try_*: the target may be despawned by another system this frame.
+                let knock_dir =
+                    (target_transform.translation - hit_pos).normalize_or_zero() + Vec3::Y * 0.2;
+                let knock_strength = if projectile.explosive.is_some() { 2.0 } else { 4.5 };
+                velocity.0 += knock_dir * knock_strength;
                 if players.contains(target) {
                     commands.entity(target).try_insert(DamageFlash(FLASH_TIME));
+                    shake.write(ShakeCamera {
+                        intensity: HIT_SHAKE,
+                    });
                 }
             }
+            spawn_hit_sparks(
+                &mut commands,
+                &assets,
+                hit_pos,
+                maybe_bullet.to_bits() as u32,
+            );
             if projectile.explosive.is_none() {
                 sfx.write(PlaySfx {
                     kind: SfxKind::Hit,
-                    position: Some(bullet_transform.translation),
+                    position: Some(hit_pos),
                 });
             }
             if let Some((radius, damage)) = projectile.explosive {
@@ -458,20 +648,35 @@ fn resolve_explosions(
     mut commands: Commands,
     mut explosions: MessageReader<Explode>,
     mut sfx: MessageWriter<PlaySfx>,
+    mut shake: MessageWriter<ShakeCamera>,
     assets: Res<ProjectileAssets>,
     players: Query<(), With<Player>>,
     mut healths: Query<(Entity, &Transform, &mut Health)>,
     mut bodies: Query<(&Transform, &mut LinearVelocity), Without<Sensor>>,
 ) {
     for explosion in explosions.read() {
+        let big = explosion.radius >= 5.0;
         sfx.write(PlaySfx {
-            kind: if explosion.radius >= 5.0 {
+            kind: if big {
                 SfxKind::ExplosionBig
             } else {
                 SfxKind::Explosion
             },
             position: Some(explosion.pos),
         });
+        shake.write(ShakeCamera {
+            intensity: if big {
+                EXPLOSION_SHAKE
+            } else {
+                EXPLOSION_SHAKE * 0.65
+            },
+        });
+        spawn_hit_sparks(
+            &mut commands,
+            &assets,
+            explosion.pos + Vec3::Y * 0.2,
+            explosion.pos.x.to_bits() ^ explosion.pos.z.to_bits(),
+        );
         // Damage with linear falloff.
         for (entity, transform, mut health) in &mut healths {
             let dist = (transform.translation - explosion.pos).xz().length();
@@ -539,7 +744,122 @@ fn tick_lifetimes(
     }
 }
 
-/// Fade the white-hot emissive tint back out after a hit.
+fn emit_projectile_trails(
+    mut commands: Commands,
+    time: Res<Time>,
+    assets: Res<ProjectileAssets>,
+    mut emitters: Query<(&Transform, &mut TrailEmitter)>,
+) {
+    let dt = time.delta_secs();
+    for (transform, mut emitter) in &mut emitters {
+        emitter.cooldown -= dt;
+        let interval = match emitter.kind {
+            TrailKind::Tracer => 0.022,
+            TrailKind::RocketSmoke => 0.045,
+            TrailKind::Grenade => 0.06,
+        };
+        if emitter.cooldown > 0.0 {
+            continue;
+        }
+        emitter.cooldown = interval;
+
+        let (mesh, material, lifetime, scale) = match emitter.kind {
+            TrailKind::Tracer => (
+                assets.trail_tracer_mesh.clone(),
+                assets.trail_tracer_material.clone(),
+                0.12,
+                Vec3::new(0.9, 0.9, 1.2),
+            ),
+            TrailKind::RocketSmoke => (
+                assets.trail_smoke_mesh.clone(),
+                assets.trail_smoke_material.clone(),
+                0.35,
+                Vec3::splat(0.9 + (time.elapsed_secs() * 3.0).sin().abs() * 0.25),
+            ),
+            TrailKind::Grenade => (
+                assets.trail_smoke_mesh.clone(),
+                assets.trail_grenade_material.clone(),
+                0.25,
+                Vec3::splat(0.55),
+            ),
+        };
+
+        commands.spawn((
+            Name::new("Trail puff"),
+            TrailPuff {
+                age: 0.0,
+                lifetime,
+            },
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::from_translation(transform.translation - Vec3::Y * 0.05).with_scale(scale),
+        ));
+    }
+}
+
+fn pulse_grenade_fuse(
+    time: Res<Time>,
+    mut grenades: Query<(&Fuse, &mut Transform)>,
+) {
+    for (fuse, mut transform) in &mut grenades {
+        if fuse.0 > 0.6 {
+            continue;
+        }
+        let urgency = 1.0 - fuse.0 / 0.6;
+        let pulse = 1.0 + urgency * 0.25 * (time.elapsed_secs() * 20.0).sin().abs();
+        transform.scale = Vec3::splat(pulse);
+    }
+}
+
+fn tick_muzzle_flashes(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut flashes: Query<(Entity, &mut MuzzleFlash, &mut Transform)>,
+) {
+    for (entity, mut flash, mut transform) in &mut flashes {
+        flash.age += time.delta_secs();
+        if flash.age >= flash.lifetime {
+            commands.entity(entity).try_despawn();
+            continue;
+        }
+        let t = 1.0 - flash.age / flash.lifetime;
+        transform.scale = Vec3::splat(flash.start_scale * (0.25 + 0.75 * t));
+    }
+}
+
+fn tick_hit_sparks(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut sparks: Query<(Entity, &mut HitSpark, &mut Transform)>,
+) {
+    for (entity, mut spark, mut transform) in &mut sparks {
+        spark.age += time.delta_secs();
+        let t = 1.0 - (spark.age / spark.lifetime).min(1.0);
+        transform.translation.y += time.delta_secs() * 1.5;
+        transform.scale = Vec3::splat(t.max(0.1));
+        if t <= 0.0 {
+            commands.entity(entity).try_despawn();
+        }
+    }
+}
+
+fn tick_trail_puffs(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut puffs: Query<(Entity, &mut TrailPuff, &mut Transform)>,
+) {
+    for (entity, mut puff, mut transform) in &mut puffs {
+        puff.age += time.delta_secs();
+        let t = 1.0 - (puff.age / puff.lifetime).min(1.0);
+        transform.scale *= 1.0 + time.delta_secs() * 0.8;
+        transform.translation.y += time.delta_secs() * 0.2;
+        if t <= 0.0 {
+            commands.entity(entity).try_despawn();
+        }
+    }
+}
+
+/// Fade the hot emissive tint back out after a hit.
 fn tick_damage_flash(
     mut commands: Commands,
     time: Res<Time>,
@@ -554,8 +874,9 @@ fn tick_damage_flash(
             if flash.0 <= 0.0 {
                 material.emissive = LinearRgba::BLACK;
             } else {
-                let intensity = 6.0 * (flash.0 / FLASH_TIME);
-                material.emissive = LinearRgba::rgb(intensity, intensity, intensity);
+                let t = flash.0 / FLASH_TIME;
+                let intensity = 8.0 * t;
+                material.emissive = LinearRgba::rgb(intensity * 1.1, intensity * 0.35, intensity * 0.08);
             }
         }
         if flash.0 <= 0.0 {
