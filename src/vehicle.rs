@@ -236,7 +236,13 @@ fn setup_car_assets(
 
 /// Spawn a car (and its health bar) for a roster slot; `position` is the
 /// slot's index on the spawn ellipse (roster order). Used on round start/reset.
-pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot, position: usize) {
+pub fn spawn_car(
+    commands: &mut Commands,
+    assets: &CarAssets,
+    materials: &mut Assets<StandardMaterial>,
+    slot: &PlayerSlot,
+    position: usize,
+) {
     // Spawn points on an ellipse around the center, facing inward.
     let angle = position as f32 * std::f32::consts::TAU / PLAYER_COLORS.len() as f32;
     let pos = Vec3::new(
@@ -244,7 +250,10 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
         0.0,
         angle.sin() * ARENA_HALF_Z * 0.7,
     );
-    let color_index = slot.color_index % PLAYER_COLORS.len();
+    let color_index = slot.color_index;
+    if let Some(mut mat) = materials.get_mut(&assets.body_materials[color_index]) {
+        mat.emissive = LinearRgba::BLACK;
+    }
     let body = assets.body_materials[color_index].clone();
 
     let mut car_entity = commands
@@ -253,7 +262,7 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
             Car,
             Player {
                 id: slot.id,
-                color: slot.color_index,
+                color: color_index,
             },
             Health {
                 current: MAX_HEALTH,

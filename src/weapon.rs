@@ -771,8 +771,7 @@ fn tick_damage_flash(
 ) {
     for (entity, mut flash, player) in &mut flashes {
         flash.0 -= time.delta_secs();
-        let handle = &assets.body_materials[player.color % assets.body_materials.len()];
-        if let Some(mut material) = materials.get_mut(handle) {
+        if let Some(mut material) = materials.get_mut(&assets.body_materials[player.color]) {
             if flash.0 <= 0.0 {
                 material.emissive = LinearRgba::BLACK;
             } else {

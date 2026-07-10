@@ -95,6 +95,7 @@ fn enter_game(
     mut state: ResMut<MatchState>,
     assets: Res<CarAssets>,
     cop_assets: Res<CopAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     mut roster: ResMut<Roster>,
     leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
     banner: Single<&mut Text, With<Banner>>,
@@ -110,6 +111,7 @@ fn enter_game(
         &mut state,
         &assets,
         &cop_assets,
+        &mut materials,
         &roster,
         &leftovers,
         &mut *banner.into_inner(),
@@ -303,6 +305,7 @@ fn restart_on_key(
     mut state: ResMut<MatchState>,
     assets: Res<CarAssets>,
     cop_assets: Res<CopAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     roster: Res<Roster>,
     leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
     banner: Single<&mut Text, With<Banner>>,
@@ -317,6 +320,7 @@ fn restart_on_key(
         &mut state,
         &assets,
         &cop_assets,
+        &mut materials,
         &roster,
         &leftovers,
         &mut *banner.into_inner(),
@@ -332,6 +336,7 @@ fn reset_round(
     mut next: ResMut<NextState<GameState>>,
     assets: Res<CarAssets>,
     cop_assets: Res<CopAssets>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
     roster: Res<Roster>,
     leftovers: Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
     banner: Single<&mut Text, With<Banner>>,
@@ -351,6 +356,7 @@ fn reset_round(
                 &mut state,
                 &assets,
                 &cop_assets,
+                &mut materials,
                 &roster,
                 &leftovers,
                 &mut *banner.into_inner(),
@@ -375,6 +381,7 @@ fn restart_round(
     state: &mut MatchState,
     assets: &CarAssets,
     cop_assets: &CopAssets,
+    materials: &mut Assets<StandardMaterial>,
     roster: &Roster,
     leftovers: &Query<Entity, Or<(With<Car>, With<Projectile>, With<CopCar>, With<Lifetime>)>>,
     banner: &mut Text,
@@ -383,7 +390,7 @@ fn restart_round(
         commands.entity(entity).try_despawn();
     }
     for (position, slot) in roster.players.iter().enumerate() {
-        vehicle::spawn_car(commands, assets, slot, position);
+        vehicle::spawn_car(commands, assets, materials, slot, position);
     }
     let pos = cop::pick_spawn_point(time.elapsed_secs(), 0);
     cop::spawn_cop(commands, cop_assets, assets, pos);
