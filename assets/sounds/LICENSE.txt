@@ -4,3 +4,7 @@ Packs used: Sci-fi Sounds, Impact Sounds, Interface Sounds.
 "Car tire squeal skid loop" (tire_skid_loop.ogg) by audible-edge (Tom Haigh),
 submitted by qubodup — CC-BY 3.0
 https://opengameart.org/content/car-tire-squeal-skid-loop
+
+"Big explosion" / DeathFlash (car_explosion.ogg) by Blender Foundation (Yo Frankie!),
+submitted by Lamoot — CC-BY 3.0
+https://opengameart.org/content/big-explosion
