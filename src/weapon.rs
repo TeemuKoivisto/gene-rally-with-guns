@@ -161,7 +161,7 @@ struct ExplosionVfx {
 }
 
 #[derive(Resource)]
-struct ProjectileAssets {
+pub(crate) struct ProjectileAssets {
     pellet_mesh: Handle<Mesh>,
     pellet_material: Handle<StandardMaterial>,
     rocket_mesh: Handle<Mesh>,
@@ -286,7 +286,12 @@ fn setup_projectile_assets(
     });
 }
 
-fn spawn_hit_sparks(commands: &mut Commands, assets: &ProjectileAssets, pos: Vec3, seed: u32) {
+pub(crate) fn spawn_hit_sparks(
+    commands: &mut Commands,
+    assets: &ProjectileAssets,
+    pos: Vec3,
+    seed: u32,
+) {
     for i in 0..8 {
         let angle = seed.wrapping_mul(17).wrapping_add(i * 97) as f32 * 0.31;
         let offset = Vec3::new(
@@ -387,7 +392,7 @@ fn fire_weapons(
                         ));
                     }
                     sfx.write(PlaySfx {
-                        kind: SfxKind::Minigun,
+                        kind: SfxKind::Shotgun,
                         position: Some(muzzle),
                     });
                 }

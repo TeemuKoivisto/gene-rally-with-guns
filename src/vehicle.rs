@@ -13,8 +13,10 @@ use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
 use crate::arena::{ARENA_HALF_X, ARENA_HALF_Z};
+use crate::audio::{PlaySfx, SfxKind};
+use crate::cop::CopCar;
 use crate::input::{self, CarAction};
-use crate::weapon::WeaponSlot;
+use crate::weapon::{self, Lifetime, Projectile, ProjectileAssets, WeaponSlot};
 
 /// Arcade handling parameters; players and cops share the model, not the numbers.
 pub struct DriveParams {
@@ -223,8 +225,60 @@ impl Plugin for VehiclePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<Roster>()
             .add_systems(Startup, setup_car_assets)
-            .add_systems(Update, update_health_bars)
+            .add_systems(Update, (update_health_bars, car_wall_impacts))
             .add_systems(FixedUpdate, (drive_cars, lean_car_bodies).chain());
+    }
+}
+
+/// Speed below which hitting a wall is a nudge, not an event.
+const WALL_IMPACT_MIN_SPEED: f32 = 7.0;
+
+/// Crunch feedback when a car slams into the world (walls, buildings):
+/// sound and sparks, gated by impact speed. Car/cop contacts are excluded —
+/// rams have their own damage-and-flash path.
+fn car_wall_impacts(
+    mut commands: Commands,
+    mut collisions: MessageReader<CollisionStart>,
+    assets: Res<ProjectileAssets>,
+    mut sfx: MessageWriter<PlaySfx>,
+    cars: Query<(&LinearVelocity, &Transform), With<Car>>,
+    not_world: Query<
+        (),
+        Or<(
+            With<Car>,
+            With<CopCar>,
+            With<Projectile>,
+            With<Sensor>,
+            With<Lifetime>,
+        )>,
+    >,
+) {
+    for event in collisions.read() {
+        let a = event.body1.unwrap_or(event.collider1);
+        let b = event.body2.unwrap_or(event.collider2);
+        for (car_entity, other) in [(a, b), (b, a)] {
+            let Ok((velocity, transform)) = cars.get(car_entity) else {
+                continue;
+            };
+            if not_world.contains(other) {
+                continue;
+            }
+            let speed = velocity.0.xz().length();
+            if speed < WALL_IMPACT_MIN_SPEED {
+                continue;
+            }
+            sfx.write(PlaySfx {
+                kind: SfxKind::Crunch,
+                position: Some(transform.translation),
+            });
+            weapon::spawn_hit_sparks(
+                &mut commands,
+                &assets,
+                transform.translation,
+                car_entity.to_bits() as u32,
+            );
+            break; // one crunch per contact pair
+        }
     }
 }
 
@@ -355,6 +409,9 @@ pub fn spawn_car(
                 // Springy: wall hits bounce you off instead of pinning you.
                 Restitution::new(0.6).with_combine_rule(CoefficientCombine::Max),
                 Mass(6.0),
+                // Without this, avian emits no CollisionStart for car-vs-wall
+                // pairs (walls have no event flag) and the crunch never fires.
+                CollisionEventsEnabled,
             ),
             ActionState::<CarAction>::default(),
         ));

@@ -10,7 +10,6 @@ use bevy::prelude::*;
 
 #[derive(Resource)]
 pub struct SfxAssets {
-    pub minigun: [Handle<AudioSource>; 3],
     pub rocket_fire: Handle<AudioSource>,
     pub grenade_launch: Handle<AudioSource>,
     pub explosion: Handle<AudioSource>,
@@ -26,7 +25,10 @@ pub struct SfxAssets {
 
 #[derive(Clone, Copy, Debug)]
 pub enum SfxKind {
-    Minigun,
+    /// Shotgun blast: the explosion sample pitched up into a single "blam".
+    Shotgun,
+    /// Car slamming into the world (walls/buildings), speed-gated by sender.
+    Crunch,
     RocketFire,
     GrenadeLaunch,
     Explosion,
@@ -49,13 +51,13 @@ pub struct PlaySfx {
 }
 
 #[derive(Resource, Default)]
-struct MinigunVariant(usize);
+struct PitchJitter(usize);
 
 pub struct AudioSfxPlugin;
 
 impl Plugin for AudioSfxPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MinigunVariant>()
+        app.init_resource::<PitchJitter>()
             .add_message::<PlaySfx>()
             .add_systems(Startup, load_sfx_assets)
             // PostUpdate: run after FixedUpdate weapon fire and Update hit/explosion systems.
@@ -66,11 +68,6 @@ impl Plugin for AudioSfxPlugin {
 fn load_sfx_assets(mut commands: Commands, asset_server: Res<AssetServer>) {
     let load = |path: &str| asset_server.load(format!("sounds/{path}"));
     commands.insert_resource(SfxAssets {
-        minigun: [
-            load("minigun_0.ogg"),
-            load("minigun_1.ogg"),
-            load("minigun_2.ogg"),
-        ],
         rocket_fire: load("rocket_fire.ogg"),
         grenade_launch: load("grenade_launch.ogg"),
         explosion: load("explosion.ogg"),
@@ -89,17 +86,29 @@ fn play_sfx(
     mut commands: Commands,
     assets: Res<SfxAssets>,
     mut events: MessageReader<PlaySfx>,
-    mut minigun_variant: ResMut<MinigunVariant>,
+    mut jitter: ResMut<PitchJitter>,
 ) {
     for event in events.read() {
         let (handle, volume, speed) = match event.kind {
-            SfxKind::Minigun => {
-                let index = minigun_variant.0 % assets.minigun.len();
-                minigun_variant.0 = minigun_variant.0.wrapping_add(1);
+            SfxKind::Shotgun => {
+                // One clean "blam": the explosion sample pitched up a touch.
+                // No layering — stacked samples read as multiple shots.
+                let index = jitter.0 % 3;
+                jitter.0 = jitter.0.wrapping_add(1);
                 (
-                    assets.minigun[index].clone(),
-                    Volume::Linear(0.45),
-                    1.15 + (index as f32 * 0.05),
+                    assets.explosion.clone(),
+                    Volume::Linear(0.8),
+                    1.3 + index as f32 * 0.05,
+                )
+            }
+            SfxKind::Crunch => {
+                let index = jitter.0 % 3;
+                jitter.0 = jitter.0.wrapping_add(1);
+                // Wreck sound pitched up: short metallic crunch.
+                (
+                    assets.wreck.clone(),
+                    Volume::Linear(0.5),
+                    1.45 + index as f32 * 0.1,
                 )
             }
             SfxKind::RocketFire => (assets.rocket_fire.clone(), Volume::Linear(0.8), 1.0),
@@ -115,15 +124,20 @@ fn play_sfx(
             SfxKind::RoundWin => (assets.round_win.clone(), Volume::Linear(0.8), 1.0),
         };
 
-        commands.spawn((
-            AudioPlayer::new(handle),
-            PlaybackSettings {
-                mode: PlaybackMode::Despawn,
-                volume,
-                speed,
-                spatial: false,
-                ..PlaybackSettings::ONCE
-            },
-        ));
+        spawn_one(&mut commands, handle, volume.to_linear(), speed);
     }
+}
+
+/// Spawn a single one-shot, self-despawning audio player.
+fn spawn_one(commands: &mut Commands, handle: Handle<AudioSource>, volume: f32, speed: f32) {
+    commands.spawn((
+        AudioPlayer::new(handle),
+        PlaybackSettings {
+            mode: PlaybackMode::Despawn,
+            volume: Volume::Linear(volume),
+            speed,
+            spatial: false,
+            ..PlaybackSettings::ONCE
+        },
+    ));
 }
