@@ -10,6 +10,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::audio::{PlaySfx, SfxKind};
 use crate::nav::NavGrid;
 use crate::vehicle::{self, apply_drive, Car, CarAssets, DriveParams, Health, Player};
 use crate::weapon::{DamageFlash, Lifetime};
@@ -343,6 +344,7 @@ fn wreck_cops(
     time: Res<Time>,
     cop_assets: Res<CopAssets>,
     car_assets: Res<CarAssets>,
+    mut sfx: MessageWriter<PlaySfx>,
     cops: Query<(Entity, &Health, &Transform), With<CopCar>>,
 ) {
     let alive = cops.iter().filter(|(_, h, _)| h.current > 0.0).count();
@@ -353,6 +355,10 @@ fn wreck_cops(
             continue;
         }
         info!("Cop wrecked — backup incoming!");
+        sfx.write(PlaySfx {
+            kind: SfxKind::Wreck,
+            position: Some(transform.translation),
+        });
         commands.entity(entity).try_despawn();
 
         // Dark debris burst.

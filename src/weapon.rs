@@ -9,6 +9,7 @@ use avian3d::prelude::*;
 use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
+use crate::audio::{PlaySfx, SfxKind};
 use crate::input::CarAction;
 use crate::vehicle::{Car, CarAssets, Health, Player};
 
@@ -195,6 +196,7 @@ fn fire_weapons(
     mut commands: Commands,
     time: Res<Time>,
     assets: Res<ProjectileAssets>,
+    mut sfx: MessageWriter<PlaySfx>,
     mut cars: Query<
         (
             Entity,
@@ -247,12 +249,20 @@ fn fire_weapons(
                         // Short-to-mid range: tracers die sooner than before.
                         Lifetime(0.65),
                     ));
+                    sfx.write(PlaySfx {
+                        kind: SfxKind::Minigun,
+                        position: Some(muzzle),
+                    });
                 }
             }
             WeaponKind::Bazooka => {
                 if pressed && ready {
                     slot.cooldown = slot.kind.cooldown();
                     slot.ammo -= 1;
+                    sfx.write(PlaySfx {
+                        kind: SfxKind::RocketFire,
+                        position: Some(muzzle),
+                    });
                     commands.spawn((
                         Name::new("Rocket"),
                         Projectile {
@@ -287,6 +297,11 @@ fn fire_weapons(
                         GRENADE_MIN_SPEED + (GRENADE_MAX_SPEED - GRENADE_MIN_SPEED) * power;
                     // Launch in an arc: clears the 3-high buildings mid-charge.
                     let dir = forward * GRENADE_ELEVATION.cos() + Vec3::Y * GRENADE_ELEVATION.sin();
+                    let launch_pos = muzzle + Vec3::Y * 0.5;
+                    sfx.write(PlaySfx {
+                        kind: SfxKind::GrenadeLaunch,
+                        position: Some(launch_pos),
+                    });
                     commands.spawn((
                         Name::new("Grenade"),
                         Projectile {
@@ -296,7 +311,7 @@ fn fire_weapons(
                         },
                         Mesh3d(assets.grenade_mesh.clone()),
                         MeshMaterial3d(assets.grenade_material.clone()),
-                        Transform::from_translation(muzzle + Vec3::Y * 0.5),
+                        Transform::from_translation(launch_pos),
                         projectile_physics(0.18, planar_vel + dir * speed, GRENADE_GRAVITY),
                         Fuse(2.0),
                         Lifetime(6.0),
@@ -341,6 +356,7 @@ fn resolve_projectile_hits(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
     mut explosions: MessageWriter<Explode>,
+    mut sfx: MessageWriter<PlaySfx>,
     projectiles: Query<(&Projectile, &Transform)>,
     sensors: Query<(), With<Sensor>>,
     players: Query<(), With<Player>>,
@@ -372,6 +388,12 @@ fn resolve_projectile_hits(
                 if players.contains(target) {
                     commands.entity(target).try_insert(DamageFlash(FLASH_TIME));
                 }
+            }
+            if projectile.explosive.is_none() {
+                sfx.write(PlaySfx {
+                    kind: SfxKind::Hit,
+                    position: Some(bullet_transform.translation),
+                });
             }
             if let Some((radius, damage)) = projectile.explosive {
                 explosions.write(Explode {
@@ -413,12 +435,21 @@ fn tick_fuses(
 fn resolve_explosions(
     mut commands: Commands,
     mut explosions: MessageReader<Explode>,
+    mut sfx: MessageWriter<PlaySfx>,
     assets: Res<ProjectileAssets>,
     players: Query<(), With<Player>>,
     mut healths: Query<(Entity, &Transform, &mut Health)>,
     mut bodies: Query<(&Transform, &mut LinearVelocity), Without<Sensor>>,
 ) {
     for explosion in explosions.read() {
+        sfx.write(PlaySfx {
+            kind: if explosion.radius >= 5.0 {
+                SfxKind::ExplosionBig
+            } else {
+                SfxKind::Explosion
+            },
+            position: Some(explosion.pos),
+        });
         // Damage with linear falloff.
         for (entity, transform, mut health) in &mut healths {
             let dist = (transform.translation - explosion.pos).xz().length();

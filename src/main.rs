@@ -4,6 +4,7 @@
 //! gamepads press South (A / Cross) to join. See docs/game-design.md.
 
 mod arena;
+mod audio;
 mod camera;
 mod cop;
 mod input;
@@ -42,6 +43,7 @@ fn main() {
             ..default()
         })
         .add_plugins((
+            audio::AudioSfxPlugin,
             lobby::LobbyPlugin,
             arena::ArenaPlugin,
             vehicle::VehiclePlugin,

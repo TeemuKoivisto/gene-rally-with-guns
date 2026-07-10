@@ -5,6 +5,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::audio::{PlaySfx, SfxKind};
 use crate::weapon::{WeaponKind, WeaponSlot};
 
 const RESPAWN_SECONDS: f32 = 8.0;
@@ -128,7 +129,8 @@ fn respawn_crates(
 fn collect_crates(
     mut commands: Commands,
     mut collisions: MessageReader<CollisionStart>,
-    crates: Query<&WeaponCrate>,
+    mut sfx: MessageWriter<PlaySfx>,
+    crates: Query<(&WeaponCrate, &Transform)>,
     mut timers: ResMut<RespawnTimers>,
     mut cars: Query<&mut WeaponSlot>,
 ) {
@@ -138,7 +140,7 @@ fn collect_crates(
             (event.collider2, event.collider1, event.body1),
         ];
         for (maybe_crate, other, other_body) in pairs {
-            let Ok(weapon_crate) = crates.get(maybe_crate) else {
+            let Ok((weapon_crate, transform)) = crates.get(maybe_crate) else {
                 continue;
             };
             let collector = other_body.unwrap_or(other);
@@ -148,6 +150,10 @@ fn collect_crates(
             slot.kind = weapon_crate.kind;
             slot.ammo = weapon_crate.kind.refill_ammo();
             timers.0[weapon_crate.point] = RESPAWN_SECONDS;
+            sfx.write(PlaySfx {
+                kind: SfxKind::Pickup,
+                position: Some(transform.translation),
+            });
             commands.entity(maybe_crate).try_despawn();
             info!("Picked up {:?} ({} rounds)", slot.kind, slot.ammo);
         }

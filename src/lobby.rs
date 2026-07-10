@@ -7,6 +7,7 @@
 
 use bevy::prelude::*;
 
+use crate::audio::{PlaySfx, SfxKind};
 use crate::vehicle::{InputSource, PlayerSlot, Roster, PLAYER_COLORS};
 
 /// Arcade-style preset driver names, cycled with left/right.
@@ -256,21 +257,38 @@ struct LobbyIntent {
     color_dir: i32,
 }
 
-fn apply_intent(roster: &mut Roster, source: InputSource, intent: LobbyIntent) {
+fn apply_intent(
+    roster: &mut Roster,
+    source: InputSource,
+    intent: LobbyIntent,
+    sfx: &mut MessageWriter<PlaySfx>,
+) {
     let index = roster.players.iter().position(|p| p.source == source);
     match index {
         None => {
             if intent.join_or_ready {
                 join(roster, source);
+                sfx.write(PlaySfx {
+                    kind: SfxKind::UiSelect,
+                    position: None,
+                });
             }
         }
         Some(index) => {
             if intent.leave {
                 roster.players.remove(index);
+                sfx.write(PlaySfx {
+                    kind: SfxKind::UiClick,
+                    position: None,
+                });
                 return;
             }
             if intent.join_or_ready {
                 roster.players[index].ready = !roster.players[index].ready;
+                sfx.write(PlaySfx {
+                    kind: SfxKind::UiClick,
+                    position: None,
+                });
             }
             if intent.name_dir != 0 && !roster.players[index].ready {
                 let from = roster.players[index].name_index;
@@ -297,7 +315,11 @@ fn drop_disconnected_pads(pads: Query<(), With<Gamepad>>, mut roster: ResMut<Ros
     }
 }
 
-fn keyboard_lobby_input(keys: Res<ButtonInput<KeyCode>>, mut roster: ResMut<Roster>) {
+fn keyboard_lobby_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut roster: ResMut<Roster>,
+    mut sfx: MessageWriter<PlaySfx>,
+) {
     let intent = LobbyIntent {
         join_or_ready: keys.just_pressed(KeyCode::Enter),
         leave: keys.just_pressed(KeyCode::Backspace),
@@ -307,11 +329,15 @@ fn keyboard_lobby_input(keys: Res<ButtonInput<KeyCode>>, mut roster: ResMut<Rost
             - keys.just_pressed(KeyCode::ArrowUp) as i32,
     };
     if intent.join_or_ready || intent.leave || intent.name_dir != 0 || intent.color_dir != 0 {
-        apply_intent(&mut roster, InputSource::Keyboard, intent);
+        apply_intent(&mut roster, InputSource::Keyboard, intent, &mut sfx);
     }
 }
 
-fn gamepad_lobby_input(pads: Query<(Entity, &Gamepad)>, mut roster: ResMut<Roster>) {
+fn gamepad_lobby_input(
+    pads: Query<(Entity, &Gamepad)>,
+    mut roster: ResMut<Roster>,
+    mut sfx: MessageWriter<PlaySfx>,
+) {
     for (entity, pad) in &pads {
         let intent = LobbyIntent {
             join_or_ready: pad.just_pressed(GamepadButton::South),
@@ -322,7 +348,7 @@ fn gamepad_lobby_input(pads: Query<(Entity, &Gamepad)>, mut roster: ResMut<Roste
                 - pad.just_pressed(GamepadButton::DPadUp) as i32,
         };
         if intent.join_or_ready || intent.leave || intent.name_dir != 0 || intent.color_dir != 0 {
-            apply_intent(&mut roster, InputSource::Gamepad(entity), intent);
+            apply_intent(&mut roster, InputSource::Gamepad(entity), intent, &mut sfx);
         }
     }
 }
@@ -334,6 +360,7 @@ fn tick_countdown(
     roster: Res<Roster>,
     mut countdown: ResMut<StartCountdown>,
     mut next: ResMut<NextState<GameState>>,
+    mut sfx: MessageWriter<PlaySfx>,
     status: Single<&mut Text, With<StatusText>>,
 ) {
     let all_ready = !roster.players.is_empty() && roster.players.iter().all(|p| p.ready);
@@ -349,7 +376,13 @@ fn tick_countdown(
         return;
     }
 
-    let remaining = countdown.0.get_or_insert(START_DELAY);
+    let remaining = countdown.0.get_or_insert_with(|| {
+        sfx.write(PlaySfx {
+            kind: SfxKind::UiPluck,
+            position: None,
+        });
+        START_DELAY
+    });
     *remaining -= time.delta_secs();
     status.0 = format!("Starting in {:.0}...", remaining.ceil().max(1.0));
     if *remaining <= 0.0 {

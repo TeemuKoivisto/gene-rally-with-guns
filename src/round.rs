@@ -4,6 +4,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::audio::{PlaySfx, SfxKind};
 use crate::cop::{self, CopAssets, CopCar};
 use crate::lobby::{GameState, NAMES};
 use crate::vehicle::{self, Car, CarAssets, Health, HealthBar, Player, Roster, PLAYER_COLORS};
@@ -116,6 +117,7 @@ fn spawn_banner(mut commands: Commands) {
 fn eliminate_dead_cars(
     mut commands: Commands,
     assets: Res<CarAssets>,
+    mut sfx: MessageWriter<PlaySfx>,
     cars: Query<(Entity, &Health, &Player, &Transform), With<Car>>,
 ) {
     for (entity, health, player, transform) in &cars {
@@ -123,6 +125,10 @@ fn eliminate_dead_cars(
             continue;
         }
         info!("Player {} was wrecked!", player.id + 1);
+        sfx.write(PlaySfx {
+            kind: SfxKind::Wreck,
+            position: Some(transform.translation),
+        });
         commands.entity(entity).try_despawn();
 
         // Debris burst: deterministic golden-angle spread, no rand needed.
@@ -157,6 +163,7 @@ fn watch_for_winner(
     mut phase: ResMut<RoundPhase>,
     roster: Res<Roster>,
     cars: Query<&Player, With<Car>>,
+    mut sfx: MessageWriter<PlaySfx>,
     banner: Single<(&mut Text, &mut TextColor), With<Banner>>,
 ) {
     if !matches!(*phase, RoundPhase::Active) || roster.players.len() < 2 {
@@ -179,6 +186,10 @@ fn watch_for_winner(
             text.0 = format!("{name} wins the round!");
             color.0 = PLAYER_COLORS[player.color % PLAYER_COLORS.len()];
             info!("{name} wins the round!");
+            sfx.write(PlaySfx {
+                kind: SfxKind::RoundWin,
+                position: None,
+            });
         }
         None => {
             text.0 = "Everyone's wrecked — draw!".to_string();
