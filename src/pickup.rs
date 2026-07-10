@@ -12,11 +12,11 @@ const RESPAWN_SECONDS: f32 = 8.0;
 
 /// Fixed crate spawn points around the arena.
 const SPAWN_POINTS: [Vec3; 5] = [
-    Vec3::new(0.0, 0.7, 0.0),
-    Vec3::new(-26.0, 0.7, -15.0),
-    Vec3::new(26.0, 0.7, -15.0),
-    Vec3::new(-26.0, 0.7, 15.0),
-    Vec3::new(26.0, 0.7, 15.0),
+    Vec3::new(-8.0, 0.7, 0.0),
+    Vec3::new(-26.0, 0.7, -14.0),
+    Vec3::new(24.0, 0.7, -14.0),
+    Vec3::new(-26.0, 0.7, 14.0),
+    Vec3::new(24.0, 0.7, 14.0),
 ];
 
 const KINDS: [WeaponKind; 3] = [

@@ -6,7 +6,7 @@ use bevy::camera::ScalingMode;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 
-use crate::arena::{ARENA_HALF_X, ARENA_HALF_Z};
+use crate::arena::{ARENA_HALF_X, ARENA_HALF_Z, MAX_GEOMETRY_HEIGHT};
 use crate::vehicle::{Car, Player};
 
 /// Fixed camera offset from the focus point: elevated and pulled back along
@@ -16,8 +16,7 @@ const ISO_OFFSET: Vec3 = Vec3::new(0.0, 45.0, 40.0);
 const BASE_VIEWPORT_HEIGHT: f32 = 40.0;
 /// World-units margin around the arena in the widest (full-map) shot.
 const FIT_MARGIN: f32 = 4.0;
-/// Tallest world geometry that must stay in frame (walls, buildings).
-const MAX_GEOMETRY_HEIGHT: f32 = 3.0;
+
 /// Extra padding around the player cluster when zoomed in.
 const PLAYER_FRAME_PADDING: f32 = 9.0;
 /// Minimum half-extent of the framing box so a lone survivor still gets a
