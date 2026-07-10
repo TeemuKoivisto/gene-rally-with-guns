@@ -12,9 +12,8 @@ use bevy::prelude::*;
 use leafwing_input_manager::prelude::*;
 
 use crate::audio::{PlaySfx, SfxKind};
-use crate::camera::ShakeCamera;
 use crate::input::CarAction;
-use crate::vehicle::{Car, CarAssets, Health, Player};
+use crate::vehicle::{self, Car, CarAssets, Health, Player};
 
 /// Shotgun: pellets per shell, fan half-angle (rad), pellet speed (m/s), and
 /// the rearward kick per blast (m/s). Pellet lifetime caps the effective
@@ -24,14 +23,9 @@ const SHOTGUN_SPREAD: f32 = 0.24;
 const SHOTGUN_PELLET_SPEED: f32 = 42.0;
 const SHOTGUN_PELLET_DAMAGE: f32 = 5.0;
 const SHOTGUN_PELLET_LIFETIME: f32 = 0.26;
-const SHOTGUN_RECOIL: f32 = 3.5;
-const BAZOOKA_RECOIL: f32 = 2.8;
-const GRENADE_RECOIL: f32 = 1.4;
-const SHOTGUN_SHAKE: f32 = 0.22;
-const BAZOOKA_SHAKE: f32 = 0.38;
-const GRENADE_SHAKE: f32 = 0.2;
-const HIT_SHAKE: f32 = 0.14;
-const EXPLOSION_SHAKE: f32 = 0.28;
+const SHOTGUN_RECOIL: f32 = 11.0;
+const BAZOOKA_RECOIL: f32 = 9.0;
+const GRENADE_RECOIL: f32 = 5.0;
 /// Grenade launch: elevation angle (rad) and charge-scaled speed range.
 /// Tap = drop it at your feet (mine-like); full charge = fast arc across the map.
 /// Speed scales with charge^2 so the short end of the range stays controllable.
@@ -109,16 +103,10 @@ pub struct DamageFlash(pub f32);
 const FLASH_TIME: f32 = 0.22;
 
 #[derive(Component)]
-struct MuzzleFlash {
-    age: f32,
-    lifetime: f32,
-    start_scale: f32,
-}
-
-#[derive(Component)]
 struct HitSpark {
     age: f32,
     lifetime: f32,
+    start_scale: f32,
 }
 
 /// Fading trail puff left by a projectile.
@@ -166,10 +154,6 @@ struct ProjectileAssets {
     grenade_material: Handle<StandardMaterial>,
     explosion_mesh: Handle<Mesh>,
     explosion_material: Handle<StandardMaterial>,
-    muzzle_flash_mesh: Handle<Mesh>,
-    flash_minigun: Handle<StandardMaterial>,
-    flash_rocket: Handle<StandardMaterial>,
-    flash_grenade: Handle<StandardMaterial>,
     spark_mesh: Handle<Mesh>,
     spark_material: Handle<StandardMaterial>,
     trail_tracer_mesh: Handle<Mesh>,
@@ -185,7 +169,10 @@ impl Plugin for WeaponPlugin {
     fn build(&self, app: &mut App) {
         app.add_message::<Explode>()
             .add_systems(Startup, setup_projectile_assets)
-            .add_systems(FixedUpdate, (fire_weapons, drive_rockets))
+            .add_systems(
+                FixedUpdate,
+                (fire_weapons.after(vehicle::drive_cars), drive_rockets),
+            )
             .add_systems(
                 Update,
                 (
@@ -196,7 +183,6 @@ impl Plugin for WeaponPlugin {
                     pulse_grenade_fuse,
                     tick_lifetimes,
                     tick_damage_flash,
-                    tick_muzzle_flashes,
                     tick_hit_sparks,
                     tick_trail_puffs,
                     grow_explosion_vfx,
@@ -244,32 +230,10 @@ fn setup_projectile_assets(
             alpha_mode: AlphaMode::Blend,
             ..default()
         }),
-        muzzle_flash_mesh: meshes.add(Sphere::new(0.22)),
-        flash_minigun: materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.95, 0.5, 0.95),
-            emissive: LinearRgba::rgb(14.0, 12.0, 2.0),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
-        flash_rocket: materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.55, 0.15, 0.95),
-            emissive: LinearRgba::rgb(12.0, 4.0, 0.5),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
-        flash_grenade: materials.add(StandardMaterial {
-            base_color: Color::srgba(0.5, 1.0, 0.45, 0.95),
-            emissive: LinearRgba::rgb(2.0, 10.0, 1.5),
-            unlit: true,
-            alpha_mode: AlphaMode::Blend,
-            ..default()
-        }),
-        spark_mesh: meshes.add(Cuboid::new(0.12, 0.12, 0.12)),
+        spark_mesh: meshes.add(Cuboid::new(0.18, 0.18, 0.18)),
         spark_material: materials.add(StandardMaterial {
-            base_color: Color::srgba(1.0, 0.75, 0.2, 1.0),
-            emissive: LinearRgba::rgb(10.0, 6.0, 1.0),
+            base_color: Color::srgba(1.0, 0.85, 0.3, 1.0),
+            emissive: LinearRgba::rgb(18.0, 10.0, 2.0),
             unlit: true,
             ..default()
         }),
@@ -299,47 +263,26 @@ fn setup_projectile_assets(
     });
 }
 
-fn spawn_muzzle_flash(
-    commands: &mut Commands,
-    assets: &ProjectileAssets,
-    kind: WeaponKind,
-    pos: Vec3,
-    dir: Vec3,
-) {
-    let (material, lifetime, scale) = match kind {
-        WeaponKind::Shotgun => (assets.flash_minigun.clone(), 0.08, 1.25),
-        WeaponKind::Bazooka => (assets.flash_rocket.clone(), 0.1, 1.35),
-        WeaponKind::GrenadeLauncher => (assets.flash_grenade.clone(), 0.08, 1.1),
-    };
-    commands.spawn((
-        Name::new("Muzzle flash"),
-        MuzzleFlash {
-            age: 0.0,
-            lifetime,
-            start_scale: scale,
-        },
-        Mesh3d(assets.muzzle_flash_mesh.clone()),
-        MeshMaterial3d(material),
-        Transform::from_translation(pos)
-            .looking_to(dir, Vec3::Y)
-            .with_scale(Vec3::splat(scale)),
-    ));
-}
-
 fn spawn_hit_sparks(commands: &mut Commands, assets: &ProjectileAssets, pos: Vec3, seed: u32) {
-    for i in 0..6 {
+    for i in 0..8 {
         let angle = seed.wrapping_mul(17).wrapping_add(i * 97) as f32 * 0.31;
-        let offset = Vec3::new(angle.cos() * 0.3, 0.2 + (i % 2) as f32 * 0.15, angle.sin() * 0.3);
+        let offset = Vec3::new(
+            angle.cos() * 0.55,
+            0.45 + (i % 3) as f32 * 0.2,
+            angle.sin() * 0.55,
+        );
+        let start_scale = 4.5 + (i % 3) as f32 * 1.2;
         commands.spawn((
             Name::new("Hit spark"),
             HitSpark {
                 age: 0.0,
-                lifetime: 0.2,
+                lifetime: 0.4,
+                start_scale,
             },
             Mesh3d(assets.spark_mesh.clone()),
             MeshMaterial3d(assets.spark_material.clone()),
-            Transform::from_translation(pos + offset)
-                .with_scale(Vec3::splat(0.8 + (i % 2) as f32 * 0.35)),
+            Transform::from_translation(pos + offset + Vec3::Y * 0.35)
+                .with_scale(Vec3::splat(start_scale)),
         ));
     }
 }
@@ -349,7 +292,6 @@ fn fire_weapons(
     time: Res<Time>,
     assets: Res<ProjectileAssets>,
     mut sfx: MessageWriter<PlaySfx>,
-    mut shake: MessageWriter<ShakeCamera>,
     mut cars: Query<
         (
             Entity,
@@ -393,11 +335,7 @@ fn fire_weapons(
                         .sin()
                         * 43758.5453)
                         .fract();
-                    velocity.0 -= forward * SHOTGUN_RECOIL;
-                    spawn_muzzle_flash(&mut commands, &assets, kind, muzzle, forward);
-                    shake.write(ShakeCamera {
-                        intensity: SHOTGUN_SHAKE,
-                    });
+                    velocity.0 += -forward * SHOTGUN_RECOIL;
                     for i in 0..SHOTGUN_PELLETS {
                         let frac = i as f32 / (SHOTGUN_PELLETS - 1) as f32;
                         let yaw =
@@ -435,11 +373,7 @@ fn fire_weapons(
                 if pressed && ready {
                     slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
-                    velocity.0 -= forward * BAZOOKA_RECOIL;
-                    spawn_muzzle_flash(&mut commands, &assets, kind, muzzle, forward);
-                    shake.write(ShakeCamera {
-                        intensity: BAZOOKA_SHAKE,
-                    });
+                    velocity.0 += -forward * BAZOOKA_RECOIL;
                     sfx.write(PlaySfx {
                         kind: SfxKind::RocketFire,
                         position: Some(muzzle),
@@ -481,11 +415,7 @@ fn fire_weapons(
                     // Launch in an arc: clears the 3-high buildings mid-charge.
                     let dir = forward * GRENADE_ELEVATION.cos() + Vec3::Y * GRENADE_ELEVATION.sin();
                     let launch_pos = muzzle + Vec3::Y * 0.5;
-                    velocity.0 -= forward * GRENADE_RECOIL;
-                    spawn_muzzle_flash(&mut commands, &assets, kind, launch_pos, dir);
-                    shake.write(ShakeCamera {
-                        intensity: GRENADE_SHAKE,
-                    });
+                    velocity.0 += -forward * GRENADE_RECOIL;
                     sfx.write(PlaySfx {
                         kind: SfxKind::GrenadeLaunch,
                         position: Some(launch_pos),
@@ -556,7 +486,6 @@ fn resolve_projectile_hits(
     mut collisions: MessageReader<CollisionStart>,
     mut explosions: MessageWriter<Explode>,
     mut sfx: MessageWriter<PlaySfx>,
-    mut shake: MessageWriter<ShakeCamera>,
     projectiles: Query<(&Projectile, &Transform)>,
     sensors: Query<(), With<Sensor>>,
     players: Query<(), With<Player>>,
@@ -590,9 +519,6 @@ fn resolve_projectile_hits(
                 velocity.0 += knock_dir * knock_strength;
                 if players.contains(target) {
                     commands.entity(target).try_insert(DamageFlash(FLASH_TIME));
-                    shake.write(ShakeCamera {
-                        intensity: HIT_SHAKE,
-                    });
                 }
             }
             spawn_hit_sparks(
@@ -648,7 +574,6 @@ fn resolve_explosions(
     mut commands: Commands,
     mut explosions: MessageReader<Explode>,
     mut sfx: MessageWriter<PlaySfx>,
-    mut shake: MessageWriter<ShakeCamera>,
     assets: Res<ProjectileAssets>,
     players: Query<(), With<Player>>,
     mut healths: Query<(Entity, &Transform, &mut Health)>,
@@ -663,13 +588,6 @@ fn resolve_explosions(
                 SfxKind::Explosion
             },
             position: Some(explosion.pos),
-        });
-        shake.write(ShakeCamera {
-            intensity: if big {
-                EXPLOSION_SHAKE
-            } else {
-                EXPLOSION_SHAKE * 0.65
-            },
         });
         spawn_hit_sparks(
             &mut commands,
@@ -811,22 +729,6 @@ fn pulse_grenade_fuse(
     }
 }
 
-fn tick_muzzle_flashes(
-    mut commands: Commands,
-    time: Res<Time>,
-    mut flashes: Query<(Entity, &mut MuzzleFlash, &mut Transform)>,
-) {
-    for (entity, mut flash, mut transform) in &mut flashes {
-        flash.age += time.delta_secs();
-        if flash.age >= flash.lifetime {
-            commands.entity(entity).try_despawn();
-            continue;
-        }
-        let t = 1.0 - flash.age / flash.lifetime;
-        transform.scale = Vec3::splat(flash.start_scale * (0.25 + 0.75 * t));
-    }
-}
-
 fn tick_hit_sparks(
     mut commands: Commands,
     time: Res<Time>,
@@ -836,7 +738,7 @@ fn tick_hit_sparks(
         spark.age += time.delta_secs();
         let t = 1.0 - (spark.age / spark.lifetime).min(1.0);
         transform.translation.y += time.delta_secs() * 1.5;
-        transform.scale = Vec3::splat(t.max(0.1));
+        transform.scale = Vec3::splat(spark.start_scale * t.max(0.15));
         if t <= 0.0 {
             commands.entity(entity).try_despawn();
         }
