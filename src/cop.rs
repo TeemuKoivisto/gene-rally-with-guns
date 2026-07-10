@@ -29,6 +29,7 @@ const COP_DRIVE: DriveParams = DriveParams {
     full_steer_at: 0.35,
     yaw_response: 10.0,
     min_steer_authority: 0.0,
+    high_speed_steer: 1.0, // no taper: pursuit stays predictable
 };
 
 const COP_HEALTH: f32 = 60.0;

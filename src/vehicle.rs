@@ -41,6 +41,10 @@ pub struct DriveParams {
     /// steering from going dead at standstill while high-speed grip fade still
     /// enables corner slides.
     pub min_steer_authority: f32,
+    /// Steering authority fraction left at max speed (0..1). Below 1.0,
+    /// steering gets calmer the faster you go — tight turns want braking
+    /// first, and small corrections at speed stop overshooting.
+    pub high_speed_steer: f32,
 }
 
 pub const PLAYER_DRIVE: DriveParams = DriveParams {
@@ -48,7 +52,7 @@ pub const PLAYER_DRIVE: DriveParams = DriveParams {
     max_reverse_speed: 8.0,
     engine_accel: 48.0,
     brake_accel: 58.0,
-    coast_drag: 7.0,
+    coast_drag: 4.5,
     grip_low_speed: 9.0,
     grip_high_speed: 3.0,
     handbrake_grip: 1.0,
@@ -56,6 +60,7 @@ pub const PLAYER_DRIVE: DriveParams = DriveParams {
     full_steer_at: 0.2,
     yaw_response: 15.0,
     min_steer_authority: 0.65,
+    high_speed_steer: 0.75,
 };
 
 pub const MAX_HEALTH: f32 = 100.0;
@@ -75,6 +80,34 @@ pub const PLAYER_COLORS: [Color; 8] = [
 
 #[derive(Component)]
 pub struct Car;
+
+/// Ramps digital (keyboard) steering so full lock isn't reached in one frame.
+/// Sticks are analog and bots write analog values, so only keyboard cars get
+/// this. Deflecting is slower than returning to center: turn-in stays
+/// controllable, letting go recovers instantly.
+#[derive(Component, Default)]
+pub struct SteerAssist {
+    current: f32,
+}
+
+const STEER_ATTACK_RATE: f32 = 10.0;
+const STEER_RELEASE_RATE: f32 = 16.0;
+
+impl SteerAssist {
+    fn slew(&mut self, target: f32, dt: f32) -> f32 {
+        // Deflecting further in the same direction uses the slow attack rate;
+        // easing off or crossing center uses the fast release rate.
+        let deflecting = self.current * target >= 0.0 && target.abs() > self.current.abs();
+        let rate = if deflecting {
+            STEER_ATTACK_RATE
+        } else {
+            STEER_RELEASE_RATE
+        };
+        let step = rate * dt;
+        self.current += (target - self.current).clamp(-step, step);
+        self.current
+    }
+}
 
 #[derive(Component)]
 pub struct Player {
@@ -253,6 +286,9 @@ pub fn spawn_car(commands: &mut Commands, assets: &CarAssets, slot: &PlayerSlot,
         }
         source => {
             car_entity.insert(input::map_for(source));
+            if source == InputSource::Keyboard {
+                car_entity.insert(SteerAssist::default());
+            }
         }
     }
     car_entity.with_children(|parent| {
@@ -334,17 +370,23 @@ pub(crate) fn drive_cars(
             &Transform,
             &mut LinearVelocity,
             &mut AngularVelocity,
+            Option<&mut SteerAssist>,
         ),
         With<Car>,
     >,
 ) {
     let dt = time.delta_secs();
-    for (actions, transform, mut lin_vel, mut ang_vel) in &mut cars {
+    for (actions, transform, mut lin_vel, mut ang_vel, assist) in &mut cars {
+        let raw_steer = actions.clamped_value(&CarAction::Steer);
+        let steer = match assist {
+            Some(mut assist) => assist.slew(raw_steer, dt),
+            None => raw_steer,
+        };
         apply_drive(
             dt,
             &PLAYER_DRIVE,
             actions.clamped_value(&CarAction::Throttle),
-            actions.clamped_value(&CarAction::Steer),
+            steer,
             actions.pressed(&CarAction::Handbrake),
             transform,
             &mut lin_vel,
@@ -402,10 +444,15 @@ pub fn apply_drive(
 
     lin_vel.0 = forward * fwd_speed + right * lat_speed + Vec3::Y * v.y;
 
-    // Steering: authority ramps up with speed; left/right stay consistent in
-    // reverse. Yaw rate eases toward the target instead of snapping (turn-in).
-    let authority = (fwd_speed.abs() / (params.max_speed * params.full_steer_at))
+    // Steering: authority ramps up with speed, then tapers back off toward
+    // `high_speed_steer` at top speed (fast = calm, tight turns need braking).
+    // Left/right stay consistent in reverse — no sign flip anywhere, so
+    // there's nothing to twist the car on its own and pivoting in place
+    // always works. Yaw rate eases toward the target instead of snapping.
+    let ramp_up = (fwd_speed.abs() / (params.max_speed * params.full_steer_at))
         .clamp(params.min_steer_authority, 1.0);
+    let taper = 1.0 - (1.0 - params.high_speed_steer) * speed_frac;
+    let authority = ramp_up * taper;
     let target_yaw = -steer * params.max_yaw_rate * authority;
     let blend = 1.0 - (-params.yaw_response * dt).exp();
     ang_vel.y += (target_yaw - ang_vel.y) * blend;

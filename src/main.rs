@@ -35,7 +35,9 @@ fn main() {
                 ..default()
             }),
         )
-        .add_plugins(PhysicsPlugins::default())
+        // Physics steps at a fixed 64 Hz; interpolate rendered transforms so
+        // motion stays smooth at any display rate.
+        .add_plugins(PhysicsPlugins::default().set(PhysicsInterpolationPlugin::interpolate_all()))
         .add_plugins(InputManagerPlugin::<CarAction>::default())
         .insert_resource(ClearColor(Color::srgb(0.13, 0.14, 0.17)))
         .insert_resource(GlobalAmbientLight {
