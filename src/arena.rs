@@ -53,6 +53,89 @@ const MAP_EAST: f32 = 35.0;
 const MAP_NORTH: f32 = -20.0;
 const MAP_SOUTH: f32 = 20.0;
 
+/// Top Y of the base grass plane.
+const GRASS_TOP: f32 = 0.0;
+/// Top Y of park-grass slabs.
+const PARK_TOP: f32 = 0.06;
+/// Top Y of pavement strips beside roads.
+const PAVEMENT_TOP: f32 = PAVE_Y + PAVE_Y;
+/// Top Y of asphalt road surfaces.
+const ROAD_TOP: f32 = ROAD_Y + ROAD_Y;
+/// Top Y of bridge decks spanning the river.
+const BRIDGE_TOP: f32 = ROAD_Y + 0.06 + 0.07;
+/// Top Y of pavement strips on bridge decks.
+const BRIDGE_PAVEMENT_TOP: f32 = PAVE_Y + 0.05 + 0.05;
+
+/// World-space Y of the highest ground surface at `(x, z)`.
+///
+/// Mirrors the slab layout in [`spawn_street_network`] / [`spawn_bridges`] so
+/// decals (skid marks, etc.) sit just above whichever surface the wheels are on.
+pub fn ground_surface_y(x: f32, z: f32) -> f32 {
+    let mut y = GRASS_TOP;
+
+    if in_xz_rect(x, z, PARK_CENTER, PARK_SIZE) {
+        y = y.max(PARK_TOP);
+    }
+
+    for &rz in &ROADS_Z {
+        y = y.max(h_road_surface_y(x, z, MAP_WEST, RIVER_WEST, rz));
+        y = y.max(h_road_surface_y(x, z, RIVER_EAST, MAP_EAST, rz));
+        y = y.max(bridge_surface_y(x, z, rz));
+    }
+
+    for &rx in &ROADS_X {
+        y = y.max(v_road_surface_y(x, z, rx, MAP_NORTH, MAP_SOUTH));
+    }
+
+    y
+}
+
+fn in_xz_rect(x: f32, z: f32, center: Vec3, size: Vec3) -> bool {
+    (x - center.x).abs() <= size.x * 0.5 && (z - center.z).abs() <= size.z * 0.5
+}
+
+fn h_road_surface_y(x: f32, z: f32, x0: f32, x1: f32, rz: f32) -> f32 {
+    if x < x0 || x > x1 {
+        return GRASS_TOP;
+    }
+    let dz = (z - rz).abs();
+    if dz <= ROAD_W * 0.5 {
+        ROAD_TOP
+    } else if dz <= ROAD_W * 0.5 + PAVE_W {
+        PAVEMENT_TOP
+    } else {
+        GRASS_TOP
+    }
+}
+
+fn v_road_surface_y(x: f32, z: f32, rx: f32, z0: f32, z1: f32) -> f32 {
+    if z < z0 || z > z1 {
+        return GRASS_TOP;
+    }
+    let dx = (x - rx).abs();
+    if dx <= ROAD_W * 0.5 {
+        ROAD_TOP
+    } else if dx <= ROAD_W * 0.5 + PAVE_W {
+        PAVEMENT_TOP
+    } else {
+        GRASS_TOP
+    }
+}
+
+fn bridge_surface_y(x: f32, z: f32, rz: f32) -> f32 {
+    if x < RIVER_WEST || x > RIVER_EAST {
+        return GRASS_TOP;
+    }
+    let dz = (z - rz).abs();
+    if dz <= (ROAD_W + 0.4) * 0.5 {
+        BRIDGE_TOP
+    } else if dz <= ROAD_W * 0.5 + PAVE_W {
+        BRIDGE_PAVEMENT_TOP
+    } else {
+        GRASS_TOP
+    }
+}
+
 #[derive(Clone, Copy)]
 enum BuildingKind {
     Residential,

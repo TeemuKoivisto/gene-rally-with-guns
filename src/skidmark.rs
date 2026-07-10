@@ -8,6 +8,7 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
+use crate::arena::ground_surface_y;
 use crate::vehicle::Car;
 
 /// Lateral speed (m/s) above which skid marks appear.
@@ -18,8 +19,8 @@ const MARK_LIFETIME: f32 = 3.0;
 const SPAWN_INTERVAL: f32 = 0.03;
 /// Half-width of the rubber streak.
 const MARK_HALF_WIDTH: f32 = 0.07;
-/// Height above ground (avoid z-fighting with the floor).
-const MARK_Y: f32 = 0.005;
+/// Offset above the local ground surface (avoid z-fighting).
+const MARK_Y_OFFSET: f32 = 0.005;
 
 /// Per-car state: cooldown timer + last world-space position of each rear
 /// wheel, so consecutive segments can be connected.
@@ -80,7 +81,10 @@ fn rear_wheel_world(transform: &Transform, wheel_x: f32) -> Vec3 {
     let forward = *transform.forward();
     let pos = transform.translation;
     let offset = right * wheel_x + forward * (-0.6);
-    Vec3::new(pos.x + offset.x, MARK_Y, pos.z + offset.z)
+    let wx = pos.x + offset.x;
+    let wz = pos.z + offset.z;
+    let y = ground_surface_y(wx, wz) + MARK_Y_OFFSET;
+    Vec3::new(wx, y, wz)
 }
 
 fn spawn_skid_marks(
