@@ -3,7 +3,7 @@
 //! The game boots into the lobby with the arena as a live backdrop. Keyboard
 //! and each gamepad join independently; names cycle from a preset list
 //! (typing with a pad is party-game poison). When everyone is ready, a short
-//! countdown starts the match. Tab / Select returns here mid-game.
+//! countdown starts the match. The pause menu (menu.rs) returns here mid-game.
 
 use bevy::prelude::*;
 
@@ -75,10 +75,6 @@ impl Plugin for LobbyPlugin {
                 )
                     .chain()
                     .run_if(in_state(GameState::Lobby)),
-            )
-            .add_systems(
-                Update,
-                back_to_lobby.run_if(in_state(GameState::InGame)),
             );
     }
 }
@@ -147,7 +143,7 @@ fn enter_lobby(mut commands: Commands, mut roster: ResMut<Roster>, config: Res<M
                 Text::new(
                     "Keyboard: Enter join/ready - arrows left/right name, up/down color - Backspace leave - -/+ rounds - C/X add/remove CPU\n\
                      Gamepad: A join/ready - D-pad left/right name, up/down color - B leave - LB/RB rounds - Y/X add/remove CPU\n\
-                     In game: Tab / Select returns to lobby",
+                     In game: Esc / Start opens the menu",
                 ),
                 TextFont {
                     font_size: FontSize::Px(16.0),
@@ -476,13 +472,3 @@ fn tick_countdown(
     }
 }
 
-fn back_to_lobby(
-    keys: Res<ButtonInput<KeyCode>>,
-    pads: Query<&Gamepad>,
-    mut next: ResMut<NextState<GameState>>,
-) {
-    let pad_select = pads.iter().any(|p| p.just_pressed(GamepadButton::Select));
-    if keys.just_pressed(KeyCode::Tab) || pad_select {
-        next.set(GameState::Lobby);
-    }
-}

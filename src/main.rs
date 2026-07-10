@@ -10,6 +10,7 @@ mod camera;
 mod cop;
 mod input;
 mod lobby;
+mod menu;
 mod nav;
 mod pickup;
 mod round;
@@ -48,6 +49,7 @@ fn main() {
         .add_plugins((
             audio::AudioSfxPlugin,
             lobby::LobbyPlugin,
+            menu::MenuPlugin,
             arena::ArenaPlugin,
             vehicle::VehiclePlugin,
             camera::CameraPlugin,
@@ -59,7 +61,11 @@ fn main() {
             bot::BotPlugin,
             skidmark::SkidMarkPlugin,
         ))
-        .add_systems(Update, quit_on_esc)
+        // In game, Esc opens the pause menu instead (menu.rs).
+        .add_systems(
+            Update,
+            quit_on_esc.run_if(in_state(lobby::GameState::Lobby)),
+        )
         .run();
 }
 
