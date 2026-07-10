@@ -1,4 +1,4 @@
-//! Weapons (design §8): minigun, bazooka, grenade launcher.
+//! Weapons (design §8): shotgun, bazooka, grenade launcher.
 //! Cars spawn unarmed — the only way to get (or replace) a gun is a crate,
 //! and a gun that runs dry leaves you unarmed again.
 //!
@@ -15,9 +15,15 @@ use crate::audio::{PlaySfx, SfxKind};
 use crate::input::CarAction;
 use crate::vehicle::{Car, CarAssets, Health, Player};
 
-/// Minigun: per-shot spread half-angle (rad) and rearward recoil per shot (m/s).
-const MINIGUN_SPREAD: f32 = 0.09;
-const MINIGUN_RECOIL: f32 = 0.55;
+/// Shotgun: pellets per shell, fan half-angle (rad), pellet speed (m/s), and
+/// the rearward kick per blast (m/s). Pellet lifetime caps the effective
+/// range (~speed * lifetime), so blasts are brutal close and harmless far.
+const SHOTGUN_PELLETS: usize = 7;
+const SHOTGUN_SPREAD: f32 = 0.24;
+const SHOTGUN_PELLET_SPEED: f32 = 42.0;
+const SHOTGUN_PELLET_DAMAGE: f32 = 5.0;
+const SHOTGUN_PELLET_LIFETIME: f32 = 0.26;
+const SHOTGUN_RECOIL: f32 = 3.5;
 /// Grenade launch: elevation angle (rad) and charge-scaled speed range.
 /// Tap = drop it at your feet (mine-like); full charge = fast arc across the map.
 /// Speed scales with charge^2 so the short end of the range stays controllable.
@@ -29,7 +35,7 @@ const GRENADE_GRAVITY: f32 = 2.6;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum WeaponKind {
-    Minigun,
+    Shotgun,
     Bazooka,
     GrenadeLauncher,
 }
@@ -37,7 +43,7 @@ pub enum WeaponKind {
 impl WeaponKind {
     pub fn refill_ammo(self) -> u32 {
         match self {
-            Self::Minigun => 80,
+            Self::Shotgun => 12,
             Self::Bazooka => 5,
             Self::GrenadeLauncher => 8,
         }
@@ -45,7 +51,7 @@ impl WeaponKind {
 
     fn cooldown(self) -> f32 {
         match self {
-            Self::Minigun => 1.0 / 16.0,
+            Self::Shotgun => 0.9, // pump-action pace
             Self::Bazooka => 1.0,
             Self::GrenadeLauncher => 0.45,
         }
@@ -111,8 +117,8 @@ struct ExplosionVfx {
 
 #[derive(Resource)]
 struct ProjectileAssets {
-    tracer_mesh: Handle<Mesh>,
-    tracer_material: Handle<StandardMaterial>,
+    pellet_mesh: Handle<Mesh>,
+    pellet_material: Handle<StandardMaterial>,
     rocket_mesh: Handle<Mesh>,
     rocket_material: Handle<StandardMaterial>,
     grenade_mesh: Handle<Mesh>,
@@ -150,9 +156,10 @@ fn setup_projectile_assets(
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     commands.insert_resource(ProjectileAssets {
-        // Fat, bright tracer so the MG stream is readable from the iso camera.
-        tracer_mesh: meshes.add(Cuboid::new(0.14, 0.14, 0.55)),
-        tracer_material: materials.add(StandardMaterial {
+        // Chunky bright streaks so the shotgun fan is readable from the iso
+        // camera (a to-scale pellet would be sub-pixel).
+        pellet_mesh: meshes.add(Cuboid::new(0.12, 0.12, 0.4)),
+        pellet_material: materials.add(StandardMaterial {
             base_color: Color::srgb(1.0, 0.95, 0.2),
             emissive: LinearRgba::rgb(8.0, 7.0, 1.0),
             unlit: true,
@@ -222,33 +229,42 @@ fn fire_weapons(
         let planar_vel = Vec3::new(velocity.x, 0.0, velocity.z);
 
         match kind {
-            WeaponKind::Minigun => {
+            WeaponKind::Shotgun => {
                 if pressed && ready {
                     slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
-                    // Per-shot spread: cheap deterministic hash, no rand crate.
+                    // Per-blast jitter: cheap deterministic hash, no rand crate.
                     let noise = ((time.elapsed_secs() * 12.9898 + slot.ammo as f32 * 78.233)
                         .sin()
                         * 43758.5453)
                         .fract();
-                    let yaw = (noise * 2.0 - 1.0) * MINIGUN_SPREAD;
-                    let dir = Quat::from_rotation_y(yaw) * forward;
-                    // Recoil: every shot shoves the car backward a touch.
-                    velocity.0 -= forward * MINIGUN_RECOIL;
-                    commands.spawn((
-                        Name::new("Tracer"),
-                        Projectile {
-                            direct_damage: 5.0,
-                            shooter: car,
-                            explosive: None,
-                        },
-                        Mesh3d(assets.tracer_mesh.clone()),
-                        MeshMaterial3d(assets.tracer_material.clone()),
-                        Transform::from_translation(muzzle).looking_to(dir, Vec3::Y),
-                        projectile_physics(0.09, planar_vel + dir * 45.0, 0.0),
-                        // Short-to-mid range: tracers die sooner than before.
-                        Lifetime(0.65),
-                    ));
+                    // Recoil: the whole blast shoves the car back once.
+                    velocity.0 -= forward * SHOTGUN_RECOIL;
+                    // Even fan of pellets across the cone, nudged by the jitter.
+                    for i in 0..SHOTGUN_PELLETS {
+                        let frac = i as f32 / (SHOTGUN_PELLETS - 1) as f32;
+                        let yaw =
+                            (frac * 2.0 - 1.0) * SHOTGUN_SPREAD + (noise * 2.0 - 1.0) * 0.05;
+                        let dir = Quat::from_rotation_y(yaw) * forward;
+                        commands.spawn((
+                            Name::new("Pellet"),
+                            Projectile {
+                                direct_damage: SHOTGUN_PELLET_DAMAGE,
+                                shooter: car,
+                                explosive: None,
+                            },
+                            Mesh3d(assets.pellet_mesh.clone()),
+                            MeshMaterial3d(assets.pellet_material.clone()),
+                            Transform::from_translation(muzzle).looking_to(dir, Vec3::Y),
+                            projectile_physics(
+                                0.07,
+                                planar_vel + dir * SHOTGUN_PELLET_SPEED,
+                                0.0,
+                            ),
+                            // Short fuse = short range: pellets vanish past ~11 m.
+                            Lifetime(SHOTGUN_PELLET_LIFETIME),
+                        ));
+                    }
                     sfx.write(PlaySfx {
                         kind: SfxKind::Minigun,
                         position: Some(muzzle),
@@ -337,11 +353,17 @@ fn drive_rockets(time: Res<Time>, mut rockets: Query<(&RocketMotor, &mut LinearV
     }
 }
 
+/// Projectiles live on their own collision layer and ignore each other: a
+/// shotgun fan spawns 7 overlapping pellets at the muzzle, and without this
+/// they'd register hits on their neighbors and despawn on the spot.
+const PROJECTILE_LAYER: LayerMask = LayerMask(1 << 1);
+
 /// Common physics bundle for all rounds. `gravity` 0 = flies flat.
 fn projectile_physics(radius: f32, velocity: Vec3, gravity: f32) -> impl Bundle {
     (
         RigidBody::Dynamic,
         Collider::sphere(radius),
+        CollisionLayers::new(PROJECTILE_LAYER, !PROJECTILE_LAYER),
         Mass(0.15),
         GravityScale(gravity),
         SweptCcd::default(),

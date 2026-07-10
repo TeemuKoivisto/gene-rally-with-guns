@@ -13,7 +13,7 @@ use crate::input::CarAction;
 use crate::nav::NavGrid;
 use crate::pickup::WeaponCrate;
 use crate::vehicle::{self, Car, Player};
-use crate::weapon::WeaponSlot;
+use crate::weapon::{WeaponKind, WeaponSlot};
 
 /// Only shoot when the target is this close (world units)...
 const FIRE_RANGE: f32 = 22.0;
@@ -147,18 +147,24 @@ fn bot_ai(
         let angle = forward.cross(to_point).y.atan2(forward.dot(to_point));
         let steer = (-angle * 1.5).clamp(-1.0, 1.0);
 
-        // Trigger control: armed, and the enemy is in range, in the cone,
-        // and visible.
-        let can_shoot = !needs_gun
-            && enemy.is_some_and(|enemy| {
+        // Engagement range depends on the gun: shotgun pellets die short, so
+        // don't waste shells from across the map. Unarmed = never shoot.
+        let fire_range = match slot.kind {
+            Some(WeaponKind::Shotgun) => 10.0,
+            Some(_) => FIRE_RANGE,
+            None => 0.0,
+        };
+
+        // Trigger control: enemy in range, in the cone, and visible.
+        let can_shoot = enemy.is_some_and(|enemy| {
             let to_enemy = (enemy - pos).xz();
-            to_enemy.length() < FIRE_RANGE
+            to_enemy.length() < fire_range
                 && forward.xz().angle_to(to_enemy).abs() < AIM_CONE
                 && nav.line_of_sight(pos, enemy)
         });
 
         // Keep some standoff in a shootout — unless we're crate-hunting, in
-        // which case the crate matters more than trading peashooter fire.
+        // which case the crate matters more than the scrap.
         let close_to_enemy =
             enemy.is_some_and(|enemy| (enemy - pos).xz().length() < STANDOFF_RANGE);
         let throttle = if can_shoot && close_to_enemy && !needs_gun {

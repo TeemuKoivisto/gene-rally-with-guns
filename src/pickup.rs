@@ -20,7 +20,7 @@ const SPAWN_POINTS: [Vec3; 5] = [
 ];
 
 const KINDS: [WeaponKind; 3] = [
-    WeaponKind::Minigun,
+    WeaponKind::Shotgun,
     WeaponKind::Bazooka,
     WeaponKind::GrenadeLauncher,
 ];
@@ -74,7 +74,7 @@ fn setup_pickup_assets(
     commands.insert_resource(PickupAssets {
         mesh: meshes.add(Cuboid::new(0.8, 0.8, 0.8)),
         materials: [
-            // Minigun: amber.
+            // Shotgun: amber.
             make(Color::srgb(1.0, 0.75, 0.1), LinearRgba::rgb(1.2, 0.8, 0.1)),
             // Bazooka: red.
             make(Color::srgb(1.0, 0.2, 0.15), LinearRgba::rgb(1.6, 0.2, 0.1)),
