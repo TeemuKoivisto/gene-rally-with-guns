@@ -47,6 +47,7 @@ impl Plugin for LobbyPlugin {
             .add_systems(
                 Update,
                 (
+                    drop_disconnected_pads,
                     keyboard_lobby_input,
                     gamepad_lobby_input,
                     refresh_panels,
@@ -280,6 +281,19 @@ fn apply_intent(roster: &mut Roster, source: InputSource, intent: LobbyIntent) {
                 roster.players[index].color_index = free_color(roster, from, intent.color_dir);
             }
         }
+    }
+}
+
+/// A gamepad that turns off (Bluetooth sleep, cable pull) reconnects as a new
+/// entity, so its old slot can never receive input again — drop it.
+fn drop_disconnected_pads(pads: Query<(), With<Gamepad>>, mut roster: ResMut<Roster>) {
+    let gone = |slot: &PlayerSlot| match slot.source {
+        InputSource::Keyboard => false,
+        InputSource::Gamepad(entity) => !pads.contains(entity),
+    };
+    // Only touch the resource when needed; refresh_panels reacts to changes.
+    if roster.players.iter().any(gone) {
+        roster.players.retain(|slot| !gone(slot));
     }
 }
 
