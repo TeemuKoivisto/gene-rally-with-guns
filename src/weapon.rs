@@ -1,4 +1,6 @@
-//! Weapons (design §8): machine gun, bazooka, grenade launcher.
+//! Weapons (design §8): minigun, bazooka, grenade launcher.
+//! Cars spawn unarmed — the only way to get (or replace) a gun is a crate,
+//! and a gun that runs dry leaves you unarmed again.
 //!
 //! Single active slot per car; crates swap the carried weapon. Projectiles
 //! are small fast rigid bodies with swept CCD; hits resolve from avian
@@ -13,7 +15,6 @@ use crate::audio::{PlaySfx, SfxKind};
 use crate::input::CarAction;
 use crate::vehicle::{Car, CarAssets, Health, Player};
 
-pub const START_AMMO: u32 = 60;
 /// Minigun: per-shot spread half-angle (rad) and rearward recoil per shot (m/s).
 const MINIGUN_SPREAD: f32 = 0.09;
 const MINIGUN_RECOIL: f32 = 0.55;
@@ -51,25 +52,15 @@ impl WeaponKind {
     }
 }
 
-/// A car's (single, design §8) weapon slot.
-#[derive(Component)]
+/// A car's (single, design §8) weapon slot. `kind: None` = unarmed; cars
+/// spawn that way and return to it when their gun runs dry.
+#[derive(Component, Default)]
 pub struct WeaponSlot {
-    pub kind: WeaponKind,
+    pub kind: Option<WeaponKind>,
     pub ammo: u32,
     cooldown: f32,
     /// Grenade launcher: seconds the fire button has been held.
     charge: f32,
-}
-
-impl Default for WeaponSlot {
-    fn default() -> Self {
-        Self {
-            kind: WeaponKind::Minigun,
-            ammo: START_AMMO,
-            cooldown: 0.0,
-            charge: 0.0,
-        }
-    }
 }
 
 #[derive(Component)]
@@ -210,7 +201,16 @@ fn fire_weapons(
 ) {
     let dt = time.delta_secs();
     for (car, actions, transform, mut velocity, mut slot) in &mut cars {
+        // A gun that runs dry is gone: unarmed until the next crate.
+        if slot.kind.is_some() && slot.ammo == 0 {
+            info!("Out of ammo — unarmed!");
+            slot.kind = None;
+        }
         slot.cooldown = (slot.cooldown - dt).max(0.0);
+        let Some(kind) = slot.kind else {
+            slot.charge = 0.0;
+            continue;
+        };
         let pressed = actions.pressed(&CarAction::Fire);
         let released = actions.just_released(&CarAction::Fire);
         let ready = slot.cooldown <= 0.0 && slot.ammo > 0;
@@ -221,10 +221,10 @@ fn fire_weapons(
         // Inherit the car's planar velocity so shots stay accurate at speed.
         let planar_vel = Vec3::new(velocity.x, 0.0, velocity.z);
 
-        match slot.kind {
+        match kind {
             WeaponKind::Minigun => {
                 if pressed && ready {
-                    slot.cooldown = slot.kind.cooldown();
+                    slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
                     // Per-shot spread: cheap deterministic hash, no rand crate.
                     let noise = ((time.elapsed_secs() * 12.9898 + slot.ammo as f32 * 78.233)
@@ -257,7 +257,7 @@ fn fire_weapons(
             }
             WeaponKind::Bazooka => {
                 if pressed && ready {
-                    slot.cooldown = slot.kind.cooldown();
+                    slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
                     sfx.write(PlaySfx {
                         kind: SfxKind::RocketFire,
@@ -291,7 +291,7 @@ fn fire_weapons(
                 } else if released && ready {
                     let power = (slot.charge / GRENADE_CHARGE_TIME).powi(2);
                     slot.charge = 0.0;
-                    slot.cooldown = slot.kind.cooldown();
+                    slot.cooldown = kind.cooldown();
                     slot.ammo -= 1;
                     let speed =
                         GRENADE_MIN_SPEED + (GRENADE_MAX_SPEED - GRENADE_MIN_SPEED) * power;
@@ -548,7 +548,7 @@ fn draw_grenade_trajectory(
     query: Query<(&Transform, &LinearVelocity, &WeaponSlot), With<Player>>,
 ) {
     for (transform, velocity, slot) in &query {
-        if slot.kind == WeaponKind::GrenadeLauncher && slot.charge > 0.0 {
+        if slot.kind == Some(WeaponKind::GrenadeLauncher) && slot.charge > 0.0 {
             let forward = *transform.forward();
             // Muzzle sits clear of the car's own collider (half-length ~1.1).
             let muzzle = transform.translation + forward * 1.6 + Vec3::Y * 0.15;

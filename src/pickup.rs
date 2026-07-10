@@ -25,8 +25,9 @@ const KINDS: [WeaponKind; 3] = [
     WeaponKind::GrenadeLauncher,
 ];
 
+/// Public so the bot AI can steer toward uncollected crates.
 #[derive(Component)]
-struct WeaponCrate {
+pub struct WeaponCrate {
     point: usize,
     kind: WeaponKind,
 }
@@ -147,7 +148,7 @@ fn collect_crates(
             let Ok(mut slot) = cars.get_mut(collector) else {
                 continue;
             };
-            slot.kind = weapon_crate.kind;
+            slot.kind = Some(weapon_crate.kind);
             slot.ammo = weapon_crate.kind.refill_ammo();
             timers.0[weapon_crate.point] = RESPAWN_SECONDS;
             sfx.write(PlaySfx {

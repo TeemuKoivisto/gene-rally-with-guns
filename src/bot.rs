@@ -11,7 +11,9 @@ use leafwing_input_manager::prelude::*;
 
 use crate::input::CarAction;
 use crate::nav::NavGrid;
+use crate::pickup::WeaponCrate;
 use crate::vehicle::{self, Car, Player};
+use crate::weapon::WeaponSlot;
 
 /// Only shoot when the target is this close (world units)...
 const FIRE_RANGE: f32 = 22.0;
@@ -56,17 +58,19 @@ fn bot_ai(
             &mut ActionState<CarAction>,
             &Transform,
             &LinearVelocity,
+            &WeaponSlot,
         ),
         With<Car>,
     >,
     targets: Query<(Entity, &Transform), (With<Car>, With<Player>)>,
+    crates: Query<&Transform, With<WeaponCrate>>,
 ) {
     let dt = time.delta_secs();
-    for (me, mut bot, mut actions, transform, velocity) in &mut bots {
+    for (me, mut bot, mut actions, transform, velocity, slot) in &mut bots {
         let pos = transform.translation;
 
         // Nearest other living player car, planar distance.
-        let target = targets
+        let enemy = targets
             .iter()
             .filter(|(entity, _)| *entity != me)
             .min_by(|(_, a), (_, b)| {
@@ -75,8 +79,25 @@ fn bot_ai(
                 da.total_cmp(&db)
             })
             .map(|(_, t)| t.translation);
-        let Some(target) = target else {
-            // Last one standing: roll to a stop.
+
+        // Unarmed (fresh spawn or gun ran dry): detour to the nearest crate.
+        let needs_gun = slot.kind.is_none();
+        let wanted_crate = needs_gun
+            .then(|| {
+                crates
+                    .iter()
+                    .min_by(|a, b| {
+                        let da = (a.translation - pos).xz().length_squared();
+                        let db = (b.translation - pos).xz().length_squared();
+                        da.total_cmp(&db)
+                    })
+                    .map(|t| t.translation)
+            })
+            .flatten();
+
+        // Drive at the crate when we want one, otherwise at the enemy.
+        let Some(target) = wanted_crate.or(enemy) else {
+            // Last one standing, nothing to collect: roll to a stop.
             actions.set_value(&CarAction::Throttle, 0.0);
             actions.set_value(&CarAction::Steer, 0.0);
             actions.release(&CarAction::Fire);
@@ -126,15 +147,22 @@ fn bot_ai(
         let angle = forward.cross(to_point).y.atan2(forward.dot(to_point));
         let steer = (-angle * 1.5).clamp(-1.0, 1.0);
 
-        // Trigger control: enemy in range, in the cone, and visible.
-        let to_enemy = (target - pos).xz();
-        let dist = to_enemy.length();
-        let aim_error = forward.xz().angle_to(to_enemy).abs();
-        let can_shoot =
-            dist < FIRE_RANGE && aim_error < AIM_CONE && nav.line_of_sight(pos, target);
+        // Trigger control: armed, and the enemy is in range, in the cone,
+        // and visible.
+        let can_shoot = !needs_gun
+            && enemy.is_some_and(|enemy| {
+            let to_enemy = (enemy - pos).xz();
+            to_enemy.length() < FIRE_RANGE
+                && forward.xz().angle_to(to_enemy).abs() < AIM_CONE
+                && nav.line_of_sight(pos, enemy)
+        });
 
-        let throttle = if can_shoot && dist < STANDOFF_RANGE {
-            0.35 // keep some standoff while shooting
+        // Keep some standoff in a shootout — unless we're crate-hunting, in
+        // which case the crate matters more than trading peashooter fire.
+        let close_to_enemy =
+            enemy.is_some_and(|enemy| (enemy - pos).xz().length() < STANDOFF_RANGE);
+        let throttle = if can_shoot && close_to_enemy && !needs_gun {
+            0.35
         } else {
             1.0
         };
